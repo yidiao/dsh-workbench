@@ -1,7 +1,7 @@
 {
   "name": "dsh-workbench",
-  "version": "0.2.1",
-  "description": "工作区指挥台：显示接续状态、记忆预览、任务卡和运行账本，并提供安全的本地任务草稿。",
+  "version": "0.3.0",
+  "description": "工作区指挥台：接续状态可编辑、决策可追加、带审计记录，并显示记忆预览、任务卡和运行账本。",
   "keywords": ["deepseek-harness", "dsh", "cordis", "plugin", "workbench", "ui"],
   "type": "module",
   "exports": {

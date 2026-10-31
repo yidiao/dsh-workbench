@@ -1,4 +1,4 @@
-// dsh-workbench v0.2.1 —— 工作区指挥台 + 只读预览数据端点
+// dsh-workbench v0.3.0 —— 工作区指挥台：可编辑接续状态 + 审计 + 只读预览端点
 //
 // v0.2 的 UI 读取真实工作台文件并生成本地任务草稿；不写母站，不启动模型，不改变会话。
 // 三个 Host 工具仍保留：wb_get / wb_set / wb_close。
@@ -66,11 +66,17 @@ const STATE_JSON = join(WB_DIR, 'state.json')
 const STATE_MD = join(WB_DIR, 'state.md')
 const DECISIONS = join(WB_DIR, 'decisions.md')
 const LEDGER = join(WB_DIR, 'ledger.json')
+const AUDIT = join(WB_DIR, 'audit.jsonl')
+const MAX_AUDIT_CHARS = 256 * 1024
+const MAX_AUDIT_ENTRIES = 400
 const API_PATH = '/dsh-workbench/api/state-v2'
 // Preview is intentionally a read-only endpoint. There is no POST/model route.
 const PREVIEW_API_PATH = '/dsh-workbench/api/preview'
 const PREVIEW_API_VERSION_PATH = '/dsh-workbench/api/preview-v1'
 const MODELS_API_PATH = '/dsh-workbench/api/models'
+const STATE_EDIT_API_PATH = '/dsh-workbench/api/state-edit'
+const DECISION_API_PATH = '/dsh-workbench/api/decision-add'
+const AUDIT_API_PATH = '/dsh-workbench/api/audit'
 const MAX_SOURCE_BYTES = 256 * 1024
 const MAX_SOURCE_CHARS = 12000
 const MAX_SOURCES_PER_ROLE = 32
@@ -417,6 +423,97 @@ function appendBounded(path, text, maxChars = 20000) {
   writeFileSync(path, boundedTail(readSafe(path) + text, maxChars), 'utf-8')
 }
 
+// ---------------------------------------------------------------------------
+// Phase 2: editable continuity + append-only audit.
+//
+// The panel can now change its own control surface (state.json fields and new
+// decision entries). Every write is recorded in `audit.jsonl` with the actor,
+// timestamp and a compact before/after summary, so the panel can show what it
+// changed without a separate logging service. Audit text is bounded and the
+// file is trimmed to the most recent entries.
+// ---------------------------------------------------------------------------
+const INVALID = Symbol('invalid')
+
+function normaliseText(value, max) {
+  if (value === undefined || value === null) return undefined
+  if (typeof value !== 'string') return INVALID
+  const text = value.replace(/\r\n/g, '\n').trim()
+  if (!text) return ''
+  if (text.length > max) return INVALID
+  return text
+}
+
+function normaliseList(value, maxItems, maxChars) {
+  if (value === undefined || value === null) return undefined
+  const raw = Array.isArray(value) ? value : String(value).split('\n')
+  const items = []
+  for (const item of raw) {
+    const text = normaliseText(item, maxChars)
+    if (text === INVALID) return INVALID
+    if (text) items.push(text)
+    if (items.length >= maxItems) break
+  }
+  return items
+}
+
+async function readJsonBody(req, limit = 64 * 1024) {
+  if (typeof req?.[Symbol.asyncIterator] !== 'function') return { error: 'no-body' }
+  let size = 0
+  const chunks = []
+  try {
+    for await (const chunk of req) {
+      size += chunk.length
+      if (size > limit) return { tooLarge: true }
+      chunks.push(chunk)
+    }
+  } catch {
+    return { error: 'read-failed' }
+  }
+  const text = Buffer.concat(chunks).toString('utf8')
+  if (!text.trim()) return { json: {} }
+  try {
+    const json = JSON.parse(text)
+    if (!json || typeof json !== 'object' || Array.isArray(json)) return { error: 'invalid-body' }
+    return { json }
+  } catch {
+    return { error: 'invalid-json' }
+  }
+}
+
+function requestId(value) {
+  const text = normaliseText(value, 120)
+  return text === INVALID || text === undefined ? '' : text
+}
+
+function appendAudit(entry) {
+  ensureDir()
+  const line = JSON.stringify({ ts: new Date().toISOString(), actor: 'panel', version: 1, ...entry }) + '\n'
+  let text = readSafe(AUDIT) + line
+  if (text.length > MAX_AUDIT_CHARS) {
+    const lines = text.split('\n').filter(Boolean)
+    text = lines.slice(-MAX_AUDIT_ENTRIES).join('\n') + '\n'
+  }
+  writeFileSync(AUDIT, text, 'utf-8')
+}
+
+function auditEntries(limit = 50) {
+  const lines = readSafe(AUDIT).split('\n').filter(Boolean)
+  const count = Math.min(Math.max(Number(limit) || 50, 1), MAX_AUDIT_ENTRIES)
+  return lines.slice(-count).map(line => {
+    try { return JSON.parse(line) } catch { return null }
+  }).filter(Boolean).reverse()
+}
+
+function currentState() {
+  const saved = readJsonSafe(STATE_JSON, {}) || {}
+  return {
+    mainline: typeof saved.mainline === 'string' ? saved.mainline : '',
+    stopped_at: typeof saved.stopped_at === 'string' ? saved.stopped_at : '',
+    next: Array.isArray(saved.next) ? saved.next.map(String) : [],
+    red_lines: Array.isArray(saved.red_lines) ? saved.red_lines.map(String) : [],
+  }
+}
+
 function enforceLines(text) {
   const lines = String(text).replace(/\r\n/g, '\n').split('\n')
   if (lines.length > 10) {
@@ -536,6 +633,108 @@ export async function apply(ctx) {
         return
       }
       sendJson(res, 200, await modelCatalogPayload(ctx))
+    },
+  }))
+
+  // Editable continuity and append-only audit. These are the write endpoints
+  // of the control surface: loopback + browser-trust guarded, bounded bodies,
+  // and every accepted write is recorded in audit.jsonl.
+  const guard = (req, res, method) => {
+    if (!isLoopbackReq(req)) {
+      sendJson(res, 403, { ok: false, error: '只接受本机回环访问' })
+      return false
+    }
+    const rejection = ctx.connection.requestRejection(req)
+    if (rejection) {
+      sendJson(res, rejection, { ok: false, error: '未通过 Harness 浏览器信任校验' })
+      return false
+    }
+    if (req.method !== method) {
+      sendJson(res, 405, { ok: false, error: `只支持 ${method}` })
+      return false
+    }
+    return true
+  }
+
+  disposers.push(ctx.webServer.register({
+    kind: 'exact',
+    path: STATE_EDIT_API_PATH,
+    handler: async (req, res) => {
+      if (!guard(req, res, 'POST')) return
+      const body = await readJsonBody(req)
+      if (body.tooLarge) { sendJson(res, 413, { ok: false, error: '请求体过大' }); return }
+      if (body.error) { sendJson(res, 400, { ok: false, error: '请求体不是合法 JSON 对象' }); return }
+      const input = body.json
+      const before = currentState()
+      const mainline = normaliseText(input.mainline, 500)
+      const stopped = normaliseText(input.stopped_at, 500)
+      const next = normaliseList(input.next, 10, 500)
+      const redLines = normaliseList(input.red_lines, 20, 300)
+      if (mainline === INVALID || stopped === INVALID || next === INVALID || redLines === INVALID) {
+        sendJson(res, 400, { ok: false, error: '字段类型或长度不合法' })
+        return
+      }
+      const after = {
+        mainline: mainline === undefined ? before.mainline : mainline,
+        stopped_at: stopped === undefined ? before.stopped_at : stopped,
+        next: next === undefined ? before.next : next,
+        red_lines: redLines === undefined ? before.red_lines : redLines,
+      }
+      const changes = {}
+      for (const field of ['mainline', 'stopped_at', 'next', 'red_lines']) {
+        if (JSON.stringify(before[field]) !== JSON.stringify(after[field])) changes[field] = { from: before[field], to: after[field] }
+      }
+      if (Object.keys(changes).length === 0) {
+        sendJson(res, 200, { ok: true, changed: false, state: after })
+        return
+      }
+      ensureDir()
+      const stamp = new Date().toISOString()
+      const saved = { ...(readJsonSafe(STATE_JSON, {}) || {}), ...after, updated: stamp }
+      writeFileSync(STATE_JSON, JSON.stringify(saved, null, 2), 'utf-8')
+      appendAudit({
+        action: 'state.edit',
+        requestId: requestId(input.requestId),
+        summary: Object.keys(changes).join(', '),
+        changes,
+      })
+      sendJson(res, 200, { ok: true, changed: true, state: after, updated: stamp, audit: { action: 'state.edit', fields: Object.keys(changes) } })
+    },
+  }))
+
+  disposers.push(ctx.webServer.register({
+    kind: 'exact',
+    path: DECISION_API_PATH,
+    handler: async (req, res) => {
+      if (!guard(req, res, 'POST')) return
+      const body = await readJsonBody(req)
+      if (body.tooLarge) { sendJson(res, 413, { ok: false, error: '请求体过大' }); return }
+      if (body.error) { sendJson(res, 400, { ok: false, error: '请求体不是合法 JSON 对象' }); return }
+      const input = body.json
+      const text = normaliseText(input.text, 4000)
+      if (text === INVALID || text === undefined || text === '') {
+        sendJson(res, 400, { ok: false, error: '决策内容不能为空且不超过 4000 字符' })
+        return
+      }
+      ensureDir()
+      const stamp = new Date().toISOString()
+      appendBounded(DECISIONS, `\n### ${stamp}\n${text}\n`, 60000)
+      appendAudit({
+        action: 'decision.append',
+        requestId: requestId(input.requestId),
+        summary: text.slice(0, 120),
+      })
+      sendJson(res, 200, { ok: true, appended: true, ts: stamp })
+    },
+  }))
+
+  disposers.push(ctx.webServer.register({
+    kind: 'exact',
+    path: AUDIT_API_PATH,
+    handler: async (req, res) => {
+      if (!guard(req, res, 'GET')) return
+      const limit = Number(new URL(req.url || '/', 'http://127.0.0.1').searchParams.get('limit')) || 50
+      sendJson(res, 200, { ok: true, entries: auditEntries(limit), fetchedAt: new Date().toISOString() })
     },
   }))
 

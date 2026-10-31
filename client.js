@@ -30,6 +30,11 @@ window.__ModuleLoader__.load({
       previewPlan: 'Plan', previewInstruction: 'Instruction', noInstruction: '(not provided)',
       notSet: '(not set)', emptyPlan: '(no plan provided)', memoryEmpty: 'No memory summary available yet.',
       taskStatus: 'status', taskGoal: 'goal', safe: 'Safe local action',
+      edit: 'Edit', save: 'Save', cancel: 'Cancel', saving: 'Saving…', saveFailed: 'Save failed.',
+      editHint: 'Writes this workbench’s state.json only; every save is recorded in the audit trail.',
+      addDecision: 'Append decision', decisionPlaceholder: 'What was decided, why, and what it costs…',
+      decisionSaved: 'Decision appended.', decisionFailed: 'Could not append the decision.',
+      audit: 'Audit trail', auditEmpty: 'No audit entries yet.',
     }
     const zh = {
       title: '工作台', subtitle: '跨会话持续工作的控制台。',
@@ -55,6 +60,11 @@ window.__ModuleLoader__.load({
       previewPlan: '计划', previewInstruction: '指令', noInstruction: '（未提供）',
       notSet: '（未设置）', emptyPlan: '（未提供计划）', memoryEmpty: '暂时没有记忆摘要。',
       taskStatus: '状态', taskGoal: '目标', safe: '安全的本地操作',
+      edit: '编辑', save: '保存', cancel: '取消', saving: '保存中…', saveFailed: '保存失败。',
+      editHint: '只写入本工作区的 state.json；每次保存都会记入审计记录。',
+      addDecision: '追加决策', decisionPlaceholder: '决定了什么、为什么、代价是什么…',
+      decisionSaved: '决策已追加。', decisionFailed: '决策追加失败。',
+      audit: '审计记录', auditEmpty: '还没有审计记录。',
     }
 
     const CSS = `
@@ -79,6 +89,7 @@ window.__ModuleLoader__.load({
       .wb-memory-preview{margin-top:15px;padding:14px;border-radius:11px;background:var(--dsw-alias-bg-layer-2)}.wb-memory-preview pre{max-height:230px;margin:9px 0 0;overflow:auto;white-space:pre-wrap;word-break:break-word;font:12px/1.6 ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--dsw-alias-label-secondary)}
       .wb-status{display:grid;grid-template-columns:minmax(0,1.4fr) repeat(3,minmax(130px,.7fr));gap:10px;margin-bottom:16px}.wb-status-main{padding:18px 20px;position:relative;overflow:hidden}.wb-status-main:after{content:'';position:absolute;inset:0 auto 0 0;width:3px;background:var(--dsw-alias-brand-primary)}.wb-status-main h2{margin-bottom:9px}.wb-mainline{font-size:clamp(17px,2.2vw,23px);line-height:1.4;font-weight:700;letter-spacing:-.02em}.wb-stopped{margin-top:12px;color:var(--dsw-alias-label-secondary);font-size:11px;line-height:1.55}.wb-status-mini{padding:15px}.wb-status-label{display:block;margin-bottom:7px;color:var(--dsw-alias-label-secondary);font-size:10px;font-weight:700}.wb-status-value{font-size:13px;line-height:1.5}.wb-status-list{margin:0;padding-left:16px}.wb-status-list li{margin:3px 0;font-size:12px;line-height:1.4}
       .wb-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px}.wb-wide{grid-column:1/-1}.wb-list{list-style:none;padding:0;margin:0;display:grid;gap:9px}.wb-list li{display:flex;gap:9px;align-items:flex-start;font-size:12px;line-height:1.5}.wb-num{flex:0 0 20px;height:20px;display:grid;place-items:center;border-radius:6px;background:color-mix(in srgb,var(--dsw-alias-brand-primary) 12%,transparent);color:var(--dsw-alias-brand-primary);font-size:10px;font-weight:750}.wb-guard{display:flex;gap:8px;align-items:flex-start;color:var(--dsw-alias-label-primary);font-size:12px;line-height:1.5}.wb-guard:before{content:'•';color:var(--dsw-alias-state-warn-primary);font-weight:800}.wb-task{display:block;padding:10px 0;border-bottom:1px solid var(--dsw-alias-border-l1)}.wb-task:last-child{border-bottom:0}.wb-task-line{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}.wb-task-id{color:var(--dsw-alias-brand-primary);font:700 11px ui-monospace,SFMono-Regular,Consolas,monospace}.wb-task-status{color:var(--dsw-alias-label-secondary);font-size:10px}.wb-task-goal{margin-top:4px;font-size:12px;line-height:1.45}.wb-task-meta{margin-top:4px;color:var(--dsw-alias-label-secondary);font-size:10px}.wb-decisions{max-height:270px;overflow:auto;white-space:pre-wrap;font:12px/1.65 ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--dsw-alias-label-secondary)}.wb-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px}.wb-metric{border-radius:10px;background:var(--dsw-alias-bg-layer-2);padding:11px}.wb-metric strong{display:block;font-size:19px;line-height:1.2;font-weight:750}.wb-metric span{display:block;margin-top:4px;color:var(--dsw-alias-label-secondary);font-size:10px}.wb-empty,.wb-error{padding:24px 15px;text-align:center;color:var(--dsw-alias-label-secondary);font-size:12px}.wb-error{color:var(--dsw-alias-state-error-primary)}.wb-ledger-runs{margin-top:15px}.wb-ledger-runs h2{margin-bottom:9px}.wb-foot{display:flex;justify-content:space-between;gap:12px;margin-top:17px;color:var(--dsw-alias-label-secondary);font-size:10px}.wb-source{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+      .wb-edit-grid{display:grid;gap:9px;margin-top:2px}.wb-edit-grid label{font-size:11px;font-weight:700;color:var(--dsw-alias-label-secondary)}.wb-edit-grid input,.wb-edit-grid textarea,.wb-decision-form textarea{box-sizing:border-box;width:100%;border:1px solid var(--dsw-alias-border-l1);border-radius:9px;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);padding:8px 10px;font:inherit;font-size:12px;outline:none}.wb-edit-grid textarea,.wb-decision-form textarea{min-height:64px;resize:vertical;line-height:1.45}.wb-edit-grid input:focus,.wb-edit-grid textarea:focus,.wb-decision-form textarea:focus{border-color:var(--dsw-alias-brand-primary);box-shadow:0 0 0 2px color-mix(in srgb,var(--dsw-alias-brand-primary) 15%,transparent)}.wb-edit-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:2px}.wb-edit-error{color:var(--dsw-alias-state-error-primary);font-size:11px}.wb-edit-hint{color:var(--dsw-alias-label-secondary);font-size:11px}.wb-decision-form{display:grid;gap:8px;margin-top:11px}.wb-decision-actions{display:flex;justify-content:flex-end;gap:8px}.wb-decision-notice{color:var(--dsw-alias-state-success-primary);font-size:11px}.wb-audit{display:grid;gap:7px;max-height:240px;overflow:auto}.wb-audit-item{display:flex;gap:8px;align-items:baseline;border-bottom:1px dashed var(--dsw-alias-border-l1);padding-bottom:6px;font-size:11px;color:var(--dsw-alias-label-secondary)}.wb-audit-item:last-child{border-bottom:0}.wb-audit-action{flex:0 0 auto;font:700 10px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--dsw-alias-brand-primary)}.wb-audit-time{flex:0 0 auto;font:10px ui-monospace,SFMono-Regular,Consolas,monospace}.wb-audit-summary{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
       @media(max-width:880px){.wb-status{grid-template-columns:1fr 1fr}.wb-status-main{grid-column:1/-1}}@media(max-width:680px){.wb-page{padding:18px 13px 35px}.wb-topbar,.wb-intro,.wb-command-head{align-items:flex-start;flex-direction:column}.wb-top-actions,.wb-actions{width:100%;justify-content:space-between}.wb-form{display:flex;flex-direction:column}.wb-grid{grid-template-columns:1fr}.wb-wide{grid-column:auto}.wb-preview-grid{grid-template-columns:1fr}.wb-form-actions{align-items:flex-start;flex-direction:column}.wb-form-actions-right{width:100%;justify-content:flex-end}.wb-status{grid-template-columns:1fr}.wb-status-main{grid-column:auto}.wb-metrics{grid-template-columns:1fr 1fr}}
     `
 
@@ -116,16 +127,24 @@ window.__ModuleLoader__.load({
       const [preview, setPreview] = React.useState(null)
       const [memoryOpen, setMemoryOpen] = React.useState(false)
       const [catalog, setCatalog] = React.useState(null)
+      const [editOpen, setEditOpen] = React.useState(false)
+      const [draft, setDraft] = React.useState({ mainline: '', stopped_at: '', next: '', red_lines: '' })
+      const [saving, setSaving] = React.useState(false)
+      const [saveError, setSaveError] = React.useState('')
+      const [decisionDraft, setDecisionDraft] = React.useState('')
+      const [decisionBusy, setDecisionBusy] = React.useState(false)
+      const [decisionNotice, setDecisionNotice] = React.useState('')
+      const [audit, setAudit] = React.useState([])
 
       const load = React.useCallback(async () => {
         setBusy(true); setError(false)
         try {
-          // Both requests are read-only GETs against this plugin's own Host
-          // routes. The model catalog is optional: when the profile exposes no
-          // llm service the panel keeps working with a free-form draft.
-          const [response, modelsResponse] = await Promise.all([
+          // All three requests are read-only GETs against this plugin's own
+          // Host routes. The model catalog and audit list are optional.
+          const [response, modelsResponse, auditResponse] = await Promise.all([
             fetch('/dsh-workbench/api/state-v2', { cache: 'no-store', credentials: 'same-origin' }),
             fetch('/dsh-workbench/api/models', { cache: 'no-store', credentials: 'same-origin' }).catch(() => null),
+            fetch('/dsh-workbench/api/audit?limit=30', { cache: 'no-store', credentials: 'same-origin' }).catch(() => null),
           ])
           if (!response.ok) throw new Error('HTTP ' + response.status)
           const next = await response.json()
@@ -143,12 +162,33 @@ window.__ModuleLoader__.load({
               }
             } catch { /* keep previous catalog */ }
           }
+          if (auditResponse && auditResponse.ok) {
+            try {
+              const auditPayload = await auditResponse.json()
+              if (auditPayload && Array.isArray(auditPayload.entries)) setAudit(auditPayload.entries)
+            } catch { /* keep previous audit */ }
+          }
           const state = next.state || {}
           setGoal(String(firstValue(state.goal, state.mainline) || ''))
           setPlan(asList(state.next).join('\n'))
         } catch { setError(true) } finally { setBusy(false) }
       }, [])
       React.useEffect(() => { load() }, [load])
+
+      async function postJson(path, body) {
+        const response = await fetch(path, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify(body),
+        })
+        let payload = null
+        try { payload = await response.json() } catch { /* non-JSON error */ }
+        if (!response.ok || !payload || payload.ok !== true) {
+          throw new Error(payload?.error || ('HTTP ' + response.status))
+        }
+        return payload
+      }
 
       const state = data?.state || {}
       const next = asList(state.next)
@@ -171,6 +211,54 @@ window.__ModuleLoader__.load({
         setGoal(''); setPlan(''); setInstruction(''); setPreview(null)
       }
 
+      function openEdit() {
+        setDraft({
+          mainline: String(firstValue(state.mainline) || ''),
+          stopped_at: String(firstValue(state.stopped_at, state.stoppedAt, '') || ''),
+          next: next.join('\n'),
+          red_lines: redlines.join('\n'),
+        })
+        setSaveError('')
+        setEditOpen(true)
+      }
+
+      async function saveState(event) {
+        event?.preventDefault?.()
+        setSaving(true); setSaveError('')
+        try {
+          await postJson('/dsh-workbench/api/state-edit', {
+            mainline: draft.mainline,
+            stopped_at: draft.stopped_at,
+            next: draft.next,
+            red_lines: draft.red_lines,
+            requestId: 'panel-' + Date.now(),
+          })
+          setEditOpen(false)
+          await load()
+        } catch (error) {
+          setSaveError(String(error?.message || t('saveFailed')))
+        } finally {
+          setSaving(false)
+        }
+      }
+
+      async function addDecision(event) {
+        event?.preventDefault?.()
+        const text = decisionDraft.trim()
+        if (!text) return
+        setDecisionBusy(true); setDecisionNotice(''); setSaveError('')
+        try {
+          await postJson('/dsh-workbench/api/decision-add', { text, requestId: 'panel-' + Date.now() })
+          setDecisionDraft('')
+          setDecisionNotice(t('decisionSaved'))
+          await load()
+        } catch (error) {
+          setSaveError(String(error?.message || t('decisionFailed')))
+        } finally {
+          setDecisionBusy(false)
+        }
+      }
+
       function taskText(item) {
         if (typeof item !== 'object' || item === null) return { id: '', status: '', goal: String(item), meta: '' }
         return {
@@ -179,6 +267,12 @@ window.__ModuleLoader__.load({
           goal: firstValue(item.goal, item.title, item.deliverable, item.text, t('notSet')),
           meta: [item.tier, item.model].filter(Boolean).join(' · '),
         }
+      }
+
+      function auditSummary(entry) {
+        if (entry?.summary) return String(entry.summary)
+        if (entry?.changes && typeof entry.changes === 'object') return Object.keys(entry.changes).join(', ')
+        return ''
       }
 
       const topbar = h('header', { className: 'wb-topbar' },
@@ -239,16 +333,36 @@ window.__ModuleLoader__.load({
           h('strong', null, t('memoryPreview')),
           h('pre', null, memory)))
 
-      const continuityCard = h('section', { className: 'wb-card wb-wide wb-continuity' },
-        h('div', { className: 'wb-card-heading' },
-          h('h2', null, t('continuity')),
-          h('span', { className: 'wb-form-note' }, t('updated') + ': ' + (state.updated || data?.fetchedAt || '—'))),
+      const continuityRead = h('div', null,
         h('div', { className: 'wb-mainline' }, displayValue(state.mainline, t('noData'))),
         h('div', { className: 'wb-stopped' }, h('strong', null, t('stopped') + ' · '), displayValue(state.stopped_at || state.stoppedAt, t('noData'))),
         h('div', { className: 'wb-status' },
           h('div', { className: 'wb-card wb-status-mini' }, h('span', { className: 'wb-status-label' }, t('next')), next.length ? h('ol', { className: 'wb-status-list' }, next.slice(0, 3).map((item, i) => h('li', { key: i }, item))) : h('div', { className: 'wb-status-value' }, t('noData'))),
           h('div', { className: 'wb-card wb-status-mini' }, h('span', { className: 'wb-status-label' }, t('redlines')), redlines.length ? h('ul', { className: 'wb-status-list' }, redlines.slice(0, 3).map((item, i) => h('li', { key: i }, item))) : h('div', { className: 'wb-status-value' }, t('noData'))),
           h('div', { className: 'wb-card wb-status-mini' }, h('span', { className: 'wb-status-label' }, t('memorySummary')), h('div', { className: 'wb-status-value' }, memory.split(/\r?\n/)[0].slice(0, 120) || t('noData')))))
+
+      const continuityEdit = h('form', { className: 'wb-edit-grid', onSubmit: saveState },
+        h('label', { htmlFor: 'wb-edit-mainline' }, t('mainline')),
+        h('input', { id: 'wb-edit-mainline', value: draft.mainline, onChange: event => setDraft({ ...draft, mainline: event.target.value }) }),
+        h('label', { htmlFor: 'wb-edit-stopped' }, t('stopped')),
+        h('input', { id: 'wb-edit-stopped', value: draft.stopped_at, onChange: event => setDraft({ ...draft, stopped_at: event.target.value }) }),
+        h('label', { htmlFor: 'wb-edit-next' }, t('next') + '（每行一条）'),
+        h('textarea', { id: 'wb-edit-next', value: draft.next, onChange: event => setDraft({ ...draft, next: event.target.value }) }),
+        h('label', { htmlFor: 'wb-edit-redlines' }, t('redlines') + '（每行一条）'),
+        h('textarea', { id: 'wb-edit-redlines', value: draft.red_lines, onChange: event => setDraft({ ...draft, red_lines: event.target.value }) }),
+        saveError && h('div', { className: 'wb-edit-error', role: 'alert' }, saveError),
+        h('div', { className: 'wb-edit-hint' }, t('editHint')),
+        h('div', { className: 'wb-edit-actions' },
+          h('button', { className: 'wb-button', type: 'button', onClick: () => { setEditOpen(false); setSaveError('') } }, t('cancel')),
+          h('button', { className: 'wb-button wb-button-primary', type: 'submit', disabled: saving }, saving ? t('saving') : t('save'))))
+
+      const continuityCard = h('section', { className: 'wb-card wb-wide wb-continuity' },
+        h('div', { className: 'wb-card-heading' },
+          h('h2', null, t('continuity')),
+          h('div', { className: 'wb-actions' },
+            h('span', { className: 'wb-form-note' }, t('updated') + ': ' + (state.updated || data?.fetchedAt || '—')),
+            !editOpen && h('button', { className: 'wb-button', type: 'button', onClick: openEdit }, t('edit')))),
+        editOpen ? continuityEdit : continuityRead)
 
       const memoryCard = h('section', { className: 'wb-card' },
         h('div', { className: 'wb-card-heading' },
@@ -289,7 +403,30 @@ window.__ModuleLoader__.load({
 
       const decisionsCard = h('section', { className: 'wb-card' },
         h('h2', null, t('decisions')),
-        h('div', { className: 'wb-decisions' }, decisions || t('noDecisions')))
+        h('div', { className: 'wb-decisions' }, decisions || t('noDecisions')),
+        h('form', { className: 'wb-decision-form', onSubmit: addDecision },
+          h('textarea', {
+            value: decisionDraft,
+            placeholder: t('decisionPlaceholder'),
+            'aria-label': t('addDecision'),
+            onChange: event => setDecisionDraft(event.target.value),
+          }),
+          h('div', { className: 'wb-decision-actions' },
+            decisionNotice && h('span', { className: 'wb-decision-notice' }, decisionNotice),
+            h('button', {
+              className: 'wb-button wb-button-primary',
+              type: 'submit',
+              disabled: decisionBusy || !decisionDraft.trim(),
+            }, decisionBusy ? t('saving') : t('addDecision')))))
+
+      const auditCard = h('section', { className: 'wb-card wb-wide' },
+        h('h2', null, t('audit')),
+        audit.length
+          ? h('div', { className: 'wb-audit' }, audit.slice(0, 20).map((entry, i) => h('div', { className: 'wb-audit-item', key: i },
+            h('span', { className: 'wb-audit-action' }, entry.action || '—'),
+            h('span', { className: 'wb-audit-time' }, String(entry.ts || '').replace('T', ' ').slice(0, 19)),
+            h('span', { className: 'wb-audit-summary' }, auditSummary(entry)))))
+          : h('div', { className: 'wb-empty' }, t('auditEmpty')))
 
       let body
       if (error) {
@@ -302,7 +439,7 @@ window.__ModuleLoader__.load({
         body = h('div', { className: 'wb-content' },
           commandCard,
           continuityCard,
-          h('div', { className: 'wb-grid' }, memoryCard, tasksCard, ledgerCard, decisionsCard),
+          h('div', { className: 'wb-grid' }, memoryCard, tasksCard, ledgerCard, decisionsCard, auditCard),
           h('footer', { className: 'wb-foot' },
             h('span', { className: 'wb-source' }, t('source')),
             h('span', null, t('updated') + ': ' + (data.fetchedAt || '—'))))
