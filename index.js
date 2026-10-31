@@ -1,4 +1,4 @@
-// dsh-workbench v0.3.0 —— 工作区指挥台：可编辑接续状态 + 审计 + 只读预览端点
+// dsh-workbench v0.4.0 —— 工作区指挥台：可编辑接续状态 + 审计 + 派发到真实 DSH 会话
 //
 // v0.2 的 UI 读取真实工作台文件并生成本地任务草稿；不写母站，不启动模型，不改变会话。
 // 三个 Host 工具仍保留：wb_get / wb_set / wb_close。
@@ -16,7 +16,7 @@ import {
   realpathSync,
 } from 'node:fs'
 import { createHash } from 'node:crypto'
-import { dirname, join, relative, resolve, isAbsolute, sep } from 'node:path'
+import { dirname, join, relative, resolve, isAbsolute, sep, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { homedir } from 'node:os'
 
@@ -77,6 +77,11 @@ const MODELS_API_PATH = '/dsh-workbench/api/models'
 const STATE_EDIT_API_PATH = '/dsh-workbench/api/state-edit'
 const DECISION_API_PATH = '/dsh-workbench/api/decision-add'
 const AUDIT_API_PATH = '/dsh-workbench/api/audit'
+const DISPATCH_API_PATH = '/dsh-workbench/api/dispatch'
+const RUNS_API_PATH = '/dsh-workbench/api/runs'
+const RUNS_CANCEL_API_PATH = '/dsh-workbench/api/runs/cancel'
+const RUNS = join(WB_DIR, 'runs.json')
+const MAX_RUNS = 50
 const MAX_SOURCE_BYTES = 256 * 1024
 const MAX_SOURCE_CHARS = 12000
 const MAX_SOURCES_PER_ROLE = 32
@@ -378,6 +383,139 @@ async function modelCatalogPayload(ctx) {
   return { ok: true, available: true, groups, current, fetchedAt: new Date().toISOString() }
 }
 
+// ---------------------------------------------------------------------------
+// Phase 3: one-shot dispatch into a real DSH Session.
+//
+// The panel sends a composed instruction to the Host `sessionController`
+// (create -> optional selectModel -> prompt). This reuses DSH's own durable
+// Session, Agent loop, tool permissions and cancellation lifecycle; it never
+// calls a provider directly. Dispatch stays opt-in per workspace through
+// `execution.enabled` in the workspace config, and every start/cancel is
+// audited. A dry run composes the prompt without creating anything.
+// ---------------------------------------------------------------------------
+function executionConfig() {
+  const config = readWorkspaceConfig().value
+  const execution = config?.execution && typeof config.execution === 'object' ? config.execution : {}
+  const flag = firstValue(process.env.DSH_WORKBENCH_EXECUTION, execution.enabled)
+  const enabled = flag === true || String(flag).toLowerCase() === 'true' || String(flag) === '1'
+  const base = canonicalPath(WB_DIR)
+  const configured = firstValue(execution.cwd, execution.rootDir, execution.workspaceRoot)
+  let cwd = ''
+  if (typeof configured === 'string' && configured.trim()) {
+    const candidate = isAbsolute(configured.trim()) ? resolve(configured.trim()) : resolve(base, configured.trim())
+    try {
+      if (existsSync(candidate) && statSync(candidate).isDirectory()) cwd = canonicalPath(candidate)
+    } catch {
+      cwd = ''
+    }
+  }
+  if (!cwd) {
+    const parent = dirname(base)
+    const preferred = basename(base).startsWith('_') && existsSync(parent) ? parent : base
+    cwd = canonicalPath(preferred)
+  }
+  return { enabled, cwd, configured: Boolean(configured) }
+}
+
+function composeDispatchPrompt({ goal, plan, instruction }) {
+  const lines = ['[DSH Workbench 任务]', `目标：${goal}`]
+  if (plan) lines.push(`计划：\n${plan}`)
+  if (instruction) lines.push(`补充指令：\n${instruction}`)
+  lines.push('要求：完成本轮后给出简短结论（做了什么、结果、产物路径）；如需回写工作台状态，使用工作台的 wb_set / wb_close 工具。')
+  return lines.join('\n\n').slice(0, 12000)
+}
+
+function readRuns() {
+  const raw = readJsonSafe(RUNS, null)
+  if (Array.isArray(raw)) return raw
+  if (raw && Array.isArray(raw.items)) return raw.items
+  return []
+}
+
+function writeRuns(items) {
+  ensureDir()
+  try {
+    writeFileSync(RUNS, JSON.stringify({ version: 1, items: items.slice(0, MAX_RUNS) }, null, 2), 'utf-8')
+  } catch {
+    // Best effort: a failed run-registry write must not break dispatch.
+  }
+}
+
+function newRunId() {
+  return 'run_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
+}
+
+function sessionEventsOf(ctx, sessionId) {
+  try {
+    const session = serviceGet(ctx, 'sessions')?.get?.(sessionId)
+    const events = session?.snapshotEvents?.()
+    return Array.isArray(events) ? events : []
+  } catch {
+    return []
+  }
+}
+
+function lastTurnEndKind(events) {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const event = events[i]
+    if (event?.type === 'turn/end') return event?.data?.reason?.kind
+  }
+  return undefined
+}
+
+function lastAssistantText(ctx, sessionId) {
+  const events = sessionEventsOf(ctx, sessionId)
+  for (let i = events.length - 1; i >= 0; i--) {
+    const event = events[i]
+    if (event?.type !== 'assistant/message') continue
+    const blocks = event?.data?.message?.content
+    if (!Array.isArray(blocks)) continue
+    const text = blocks
+      .filter(block => block?.type === 'text' && typeof block.text === 'string')
+      .map(block => block.text)
+      .join('\n')
+      .trim()
+    if (text) return text.slice(0, 1200)
+  }
+  return ''
+}
+
+function finaliseRun(ctx, run) {
+  const events = sessionEventsOf(ctx, run.sessionId)
+  const kind = lastTurnEndKind(events)
+  run.status = kind === 'error' ? 'error' : (kind === 'aborted' || kind === 'interrupted') ? 'cancelled' : 'done'
+  run.reply = lastAssistantText(ctx, run.sessionId)
+  run.updatedAt = Date.now()
+}
+
+async function refreshRuns(ctx, items) {
+  const controller = serviceGet(ctx, 'sessionController')
+  if (!controller || typeof controller.list !== 'function') return items
+  let listed
+  try {
+    listed = await controller.list()
+  } catch {
+    return items
+  }
+  if (listed && !Array.isArray(listed)) listed = listed.value?.items ?? listed.items
+  if (!Array.isArray(listed)) listed = []
+  const byId = new Map(listed.filter(item => item && typeof item.sessionId === 'string').map(item => [item.sessionId, item]))
+  let changed = false
+  for (const run of items) {
+    if (!run || typeof run !== 'object' || typeof run.sessionId !== 'string') continue
+    const item = byId.get(run.sessionId)
+    if (!item) continue
+    if (item.running) {
+      if (run.status !== 'running') { run.status = 'running'; changed = true }
+    } else if (run.status === 'running') {
+      finaliseRun(ctx, run)
+      changed = true
+    }
+  }
+  if (changed) writeRuns(items)
+  return items
+}
+
 function parseCsvLine(line) {
   const fields = []
   let value = ''
@@ -535,7 +673,7 @@ function isLoopbackReq(req) {
   return hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '::1'
 }
 
-function statePayload() {
+function statePayload(ctx) {
   const state = readJsonSafe(STATE_JSON, {}) || {}
   const stateText = readSafe(STATE_MD).slice(-8000)
   const decisionsText = readSafe(DECISIONS)
@@ -547,6 +685,8 @@ function statePayload() {
   if (ledger.greenCards === undefined && ledger.green_cards === undefined) {
     ledger.greenCards = tasks.filter(task => /绿|green|passed/i.test(String(task?.status || ''))).length
   }
+  const execution = executionConfig()
+  const controller = serviceGet(ctx, 'sessionController')
   return {
     ok: true,
     state,
@@ -555,6 +695,11 @@ function statePayload() {
     ledger,
     tasks,
     memoryPreview: memoryPreviewPayload(),
+    execution: {
+      enabled: execution.enabled,
+      cwd: execution.cwd,
+      controller: Boolean(controller && typeof controller.create === 'function' && typeof controller.prompt === 'function'),
+    },
     fetchedAt: new Date().toISOString(),
   }
 }
@@ -582,7 +727,7 @@ export async function apply(ctx) {
         sendJson(res, 405, { ok: false, error: '只支持 GET' })
         return
       }
-      sendJson(res, 200, statePayload())
+      sendJson(res, 200, statePayload(ctx))
     },
   }))
 
@@ -738,6 +883,152 @@ export async function apply(ctx) {
     },
   }))
 
+  // Dispatch composes a prompt for a real DSH Session through the official
+  // Host sessionController. It never calls a provider directly and only runs
+  // when the workspace config opts in (`execution.enabled`).
+  disposers.push(ctx.webServer.register({
+    kind: 'exact',
+    path: DISPATCH_API_PATH,
+    handler: async (req, res) => {
+      if (!guard(req, res, 'POST')) return
+      const body = await readJsonBody(req)
+      if (body.tooLarge) { sendJson(res, 413, { ok: false, error: '请求体过大' }); return }
+      if (body.error) { sendJson(res, 400, { ok: false, error: '请求体不是合法 JSON 对象' }); return }
+      const input = body.json
+      const goal = normaliseText(input.goal, 2000)
+      const plan = normaliseText(input.plan, 4000)
+      const instruction = normaliseText(input.instruction, 4000)
+      const model = normaliseText(input.model, 200)
+      if (goal === INVALID || plan === INVALID || instruction === INVALID || model === INVALID) {
+        sendJson(res, 400, { ok: false, error: '字段类型或长度不合法' })
+        return
+      }
+      if (!goal) { sendJson(res, 400, { ok: false, error: 'goal 不能为空' }); return }
+      const exec = executionConfig()
+      const controller = serviceGet(ctx, 'sessionController')
+      const capable = Boolean(controller && typeof controller.create === 'function' && typeof controller.prompt === 'function')
+      const promptText = composeDispatchPrompt({ goal, plan: plan || '', instruction: instruction || '' })
+      if (input.dryRun === true) {
+        sendJson(res, 200, {
+          ok: true,
+          dryRun: true,
+          available: capable,
+          executionEnabled: exec.enabled,
+          prompt: promptText,
+          cwd: exec.cwd,
+          model: model || '',
+          memoryFingerprint: memoryPreviewPayload().memory.fingerprint,
+        })
+        return
+      }
+      if (!capable) {
+        sendJson(res, 501, { ok: false, code: 'unsupported', error: '当前 profile 未提供 sessionController，无法派发' })
+        return
+      }
+      if (!exec.enabled) {
+        sendJson(res, 409, { ok: false, code: 'execution-disabled', error: '执行未启用：在工作区 workbench.config.json 中设置 execution.enabled=true' })
+        return
+      }
+      const runId = newRunId()
+      let sessionId = ''
+      try {
+        const created = await controller.create({ cwd: exec.cwd })
+        sessionId = String(created?.sessionId ?? created?.value?.sessionId ?? '')
+        if (!sessionId) throw new Error('sessionController.create 未返回 sessionId')
+      } catch (error) {
+        appendAudit({ action: 'dispatch.failed', requestId: runId, summary: 'create: ' + String(error?.message || error).slice(0, 160) })
+        sendJson(res, 502, { ok: false, code: 'create-failed', error: String(error?.message || error) })
+        return
+      }
+      let modelWarning = ''
+      if (model && typeof controller.selectModel === 'function') {
+        const slash = model.indexOf('/')
+        if (slash > 0) {
+          try {
+            await controller.selectModel({ sessionId, provider: model.slice(0, slash), model: model.slice(slash + 1) })
+          } catch (error) {
+            modelWarning = '模型选择失败，已使用默认模型：' + String(error?.message || error)
+          }
+        } else {
+          modelWarning = '模型格式应为 provider/model，已使用默认模型'
+        }
+      }
+      try {
+        const ack = await controller.prompt({
+          sessionId,
+          requestId: runId,
+          mode: 'queue',
+          content: [{ type: 'text', text: promptText }],
+        })
+        const accepted = ack?.accepted === true || ack?.value?.accepted === true
+        if (!accepted) throw new Error('sessionController.prompt 未被接受')
+      } catch (error) {
+        appendAudit({ action: 'dispatch.failed', requestId: runId, summary: 'prompt: ' + String(error?.message || error).slice(0, 160) })
+        sendJson(res, 502, { ok: false, code: 'prompt-failed', error: String(error?.message || error), sessionId })
+        return
+      }
+      const now = Date.now()
+      const run = {
+        runId,
+        sessionId,
+        goal: goal.slice(0, 200),
+        model: model || '',
+        status: 'running',
+        createdAt: now,
+        updatedAt: now,
+        cwd: exec.cwd,
+        ...(modelWarning ? { warning: modelWarning } : {}),
+      }
+      const runs = readRuns()
+      runs.unshift(run)
+      writeRuns(runs)
+      appendAudit({ action: 'dispatch.start', requestId: runId, summary: `session ${sessionId} · ${model || '默认模型'} · ${goal.slice(0, 80)}` })
+      sendJson(res, 200, { ok: true, dryRun: false, run, ...(modelWarning ? { warning: modelWarning } : {}) })
+    },
+  }))
+
+  disposers.push(ctx.webServer.register({
+    kind: 'exact',
+    path: RUNS_API_PATH,
+    handler: async (req, res) => {
+      if (!guard(req, res, 'GET')) return
+      const items = await refreshRuns(ctx, readRuns())
+      sendJson(res, 200, { ok: true, items: items.slice(0, 20), fetchedAt: new Date().toISOString() })
+    },
+  }))
+
+  disposers.push(ctx.webServer.register({
+    kind: 'exact',
+    path: RUNS_CANCEL_API_PATH,
+    handler: async (req, res) => {
+      if (!guard(req, res, 'POST')) return
+      const body = await readJsonBody(req)
+      if (body.tooLarge) { sendJson(res, 413, { ok: false, error: '请求体过大' }); return }
+      if (body.error) { sendJson(res, 400, { ok: false, error: '请求体不是合法 JSON 对象' }); return }
+      const runId = normaliseText(body.json.runId, 120)
+      if (!runId) { sendJson(res, 400, { ok: false, error: 'runId 不能为空' }); return }
+      const runs = readRuns()
+      const run = runs.find(item => item && item.runId === runId)
+      if (!run) { sendJson(res, 404, { ok: false, error: '运行记录不存在' }); return }
+      const controller = serviceGet(ctx, 'sessionController')
+      if (!controller || typeof controller.cancel !== 'function') {
+        sendJson(res, 501, { ok: false, code: 'unsupported', error: '当前 profile 未提供 sessionController.cancel' })
+        return
+      }
+      try {
+        await controller.cancel({ sessionId: run.sessionId })
+      } catch (error) {
+        sendJson(res, 409, { ok: false, code: 'cancel-failed', error: String(error?.message || error) })
+        return
+      }
+      run.status = 'cancelled'
+      run.updatedAt = Date.now()
+      writeRuns(runs)
+      appendAudit({ action: 'dispatch.cancel', requestId: runId, summary: `session ${run.sessionId}` })
+      sendJson(res, 200, { ok: true, run })
+    },
+  }))
+
   disposers.push(ctx.tools.register({
     name: 'wb_models',
     description: '列出当前 profile 可用的模型路由（只读，不调用模型）。',
@@ -755,6 +1046,26 @@ export async function apply(ctx) {
         return `${group.name || group.id}: ${models}`
       })
       return { text: lines.length ? lines.join('\n') : '当前没有可用模型路由。' }
+    },
+  }))
+
+  disposers.push(ctx.tools.register({
+    name: 'wb_runs',
+    description: '列出由工作台派发的运行及其状态（只读）。',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {},
+    },
+    output: textOutput,
+    async execute() {
+      const items = await refreshRuns(ctx, readRuns())
+      if (!items.length) return { text: '还没有工作台派发的运行。' }
+      const lines = items.slice(0, 10).map(run => {
+        const goal = String(run.goal || '').replace(/\s+/g, ' ').slice(0, 40)
+        return `${run.runId} · ${run.status} · ${run.sessionId} · ${run.model || '默认模型'} · ${goal}`
+      })
+      return { text: lines.join('\n') }
     },
   }))
 

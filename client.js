@@ -8,7 +8,7 @@ window.__ModuleLoader__.load({
     // local preview; they never call a model, mutate a conversation, or POST data.
     const en = {
       title: 'Workbench', subtitle: 'A persistent control room for long-running work.',
-      eyebrow: 'PROJECT CONTINUITY', workspace: 'Workspace', readOnly: 'READ ONLY',
+      eyebrow: 'PROJECT CONTINUITY', workspace: 'Workspace', readOnly: 'CONTROL',
       previewOnly: 'Preview only · no model run · no host write', refresh: 'Refresh',
       loading: 'Loading workbench…', error: 'Could not read workbench files.', retry: 'Try again',
       command: 'Command center', commandHint: 'Compose the next move locally, then review before any external action.',
@@ -35,10 +35,18 @@ window.__ModuleLoader__.load({
       addDecision: 'Append decision', decisionPlaceholder: 'What was decided, why, and what it costs…',
       decisionSaved: 'Decision appended.', decisionFailed: 'Could not append the decision.',
       audit: 'Audit trail', auditEmpty: 'No audit entries yet.',
+      dispatch: 'Preview & dispatch', confirmRun: 'Run now', dispatchFailed: 'Dispatch failed.',
+      liveDispatch: 'Live dispatch',
+      confirmHint: 'Creates a real DSH session in this workspace and sends the instruction. It uses the selected model and the current tool permissions.',
+      executionEnabled: 'Execution enabled', executionDisabled: 'Execution disabled — set execution.enabled=true in workbench.config.json.',
+      executionUnavailable: 'This profile has no sessionController; dispatch is unavailable.',
+      runTitle: 'Dispatched run', runRunning: 'Running', runDone: 'Done', runCancelled: 'Cancelled', runError: 'Error',
+      sessionLabel: 'Session', lastReply: 'Last reply', noReply: 'No reply captured yet.',
+      refreshRun: 'Refresh', cancelRun: 'Cancel run', dismissRun: 'Dismiss',
     }
     const zh = {
       title: '工作台', subtitle: '跨会话持续工作的控制台。',
-      eyebrow: '项目接续', workspace: '工作区', readOnly: '只读',
+      eyebrow: '项目接续', workspace: '工作区', readOnly: '控制台',
       previewOnly: '仅预览 · 不执行模型 · 不写母站', refresh: '刷新',
       loading: '正在读取工作台…', error: '无法读取工作台文件。', retry: '重试',
       command: '指挥台', commandHint: '在本地整理下一步，确认后再决定是否交给外部执行。',
@@ -65,6 +73,14 @@ window.__ModuleLoader__.load({
       addDecision: '追加决策', decisionPlaceholder: '决定了什么、为什么、代价是什么…',
       decisionSaved: '决策已追加。', decisionFailed: '决策追加失败。',
       audit: '审计记录', auditEmpty: '还没有审计记录。',
+      dispatch: '预览并派发', confirmRun: '立即执行', dispatchFailed: '派发失败。',
+      liveDispatch: '可派发',
+      confirmHint: '会在本工作区创建真实 DSH 会话并发送这条指令；使用所选模型和当前工具权限。',
+      executionEnabled: '执行已启用', executionDisabled: '执行未启用——在工作区 workbench.config.json 中设置 execution.enabled=true。',
+      executionUnavailable: '当前 profile 没有 sessionController，无法派发。',
+      runTitle: '已派发运行', runRunning: '运行中', runDone: '已完成', runCancelled: '已取消', runError: '出错',
+      sessionLabel: '会话', lastReply: '最后回复', noReply: '还没有捕获到回复。',
+      refreshRun: '刷新', cancelRun: '取消运行', dismissRun: '关闭',
     }
 
     const CSS = `
@@ -90,6 +106,7 @@ window.__ModuleLoader__.load({
       .wb-status{display:grid;grid-template-columns:minmax(0,1.4fr) repeat(3,minmax(130px,.7fr));gap:10px;margin-bottom:16px}.wb-status-main{padding:18px 20px;position:relative;overflow:hidden}.wb-status-main:after{content:'';position:absolute;inset:0 auto 0 0;width:3px;background:var(--dsw-alias-brand-primary)}.wb-status-main h2{margin-bottom:9px}.wb-mainline{font-size:clamp(17px,2.2vw,23px);line-height:1.4;font-weight:700;letter-spacing:-.02em}.wb-stopped{margin-top:12px;color:var(--dsw-alias-label-secondary);font-size:11px;line-height:1.55}.wb-status-mini{padding:15px}.wb-status-label{display:block;margin-bottom:7px;color:var(--dsw-alias-label-secondary);font-size:10px;font-weight:700}.wb-status-value{font-size:13px;line-height:1.5}.wb-status-list{margin:0;padding-left:16px}.wb-status-list li{margin:3px 0;font-size:12px;line-height:1.4}
       .wb-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px}.wb-wide{grid-column:1/-1}.wb-list{list-style:none;padding:0;margin:0;display:grid;gap:9px}.wb-list li{display:flex;gap:9px;align-items:flex-start;font-size:12px;line-height:1.5}.wb-num{flex:0 0 20px;height:20px;display:grid;place-items:center;border-radius:6px;background:color-mix(in srgb,var(--dsw-alias-brand-primary) 12%,transparent);color:var(--dsw-alias-brand-primary);font-size:10px;font-weight:750}.wb-guard{display:flex;gap:8px;align-items:flex-start;color:var(--dsw-alias-label-primary);font-size:12px;line-height:1.5}.wb-guard:before{content:'•';color:var(--dsw-alias-state-warn-primary);font-weight:800}.wb-task{display:block;padding:10px 0;border-bottom:1px solid var(--dsw-alias-border-l1)}.wb-task:last-child{border-bottom:0}.wb-task-line{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}.wb-task-id{color:var(--dsw-alias-brand-primary);font:700 11px ui-monospace,SFMono-Regular,Consolas,monospace}.wb-task-status{color:var(--dsw-alias-label-secondary);font-size:10px}.wb-task-goal{margin-top:4px;font-size:12px;line-height:1.45}.wb-task-meta{margin-top:4px;color:var(--dsw-alias-label-secondary);font-size:10px}.wb-decisions{max-height:270px;overflow:auto;white-space:pre-wrap;font:12px/1.65 ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--dsw-alias-label-secondary)}.wb-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px}.wb-metric{border-radius:10px;background:var(--dsw-alias-bg-layer-2);padding:11px}.wb-metric strong{display:block;font-size:19px;line-height:1.2;font-weight:750}.wb-metric span{display:block;margin-top:4px;color:var(--dsw-alias-label-secondary);font-size:10px}.wb-empty,.wb-error{padding:24px 15px;text-align:center;color:var(--dsw-alias-label-secondary);font-size:12px}.wb-error{color:var(--dsw-alias-state-error-primary)}.wb-ledger-runs{margin-top:15px}.wb-ledger-runs h2{margin-bottom:9px}.wb-foot{display:flex;justify-content:space-between;gap:12px;margin-top:17px;color:var(--dsw-alias-label-secondary);font-size:10px}.wb-source{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
       .wb-edit-grid{display:grid;gap:9px;margin-top:2px}.wb-edit-grid label{font-size:11px;font-weight:700;color:var(--dsw-alias-label-secondary)}.wb-edit-grid input,.wb-edit-grid textarea,.wb-decision-form textarea{box-sizing:border-box;width:100%;border:1px solid var(--dsw-alias-border-l1);border-radius:9px;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);padding:8px 10px;font:inherit;font-size:12px;outline:none}.wb-edit-grid textarea,.wb-decision-form textarea{min-height:64px;resize:vertical;line-height:1.45}.wb-edit-grid input:focus,.wb-edit-grid textarea:focus,.wb-decision-form textarea:focus{border-color:var(--dsw-alias-brand-primary);box-shadow:0 0 0 2px color-mix(in srgb,var(--dsw-alias-brand-primary) 15%,transparent)}.wb-edit-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:2px}.wb-edit-error{color:var(--dsw-alias-state-error-primary);font-size:11px}.wb-edit-hint{color:var(--dsw-alias-label-secondary);font-size:11px}.wb-decision-form{display:grid;gap:8px;margin-top:11px}.wb-decision-actions{display:flex;justify-content:flex-end;gap:8px}.wb-decision-notice{color:var(--dsw-alias-state-success-primary);font-size:11px}.wb-audit{display:grid;gap:7px;max-height:240px;overflow:auto}.wb-audit-item{display:flex;gap:8px;align-items:baseline;border-bottom:1px dashed var(--dsw-alias-border-l1);padding-bottom:6px;font-size:11px;color:var(--dsw-alias-label-secondary)}.wb-audit-item:last-child{border-bottom:0}.wb-audit-action{flex:0 0 auto;font:700 10px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--dsw-alias-brand-primary)}.wb-audit-time{flex:0 0 auto;font:10px ui-monospace,SFMono-Regular,Consolas,monospace}.wb-audit-summary{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+      .wb-dispatch{display:grid;gap:9px;margin-top:12px;padding-top:12px;border-top:1px dashed var(--dsw-alias-border-l1)}.wb-dispatch-prompt{max-height:180px;margin:0;padding:10px;overflow:auto;border-radius:9px;background:var(--dsw-alias-bg-base);white-space:pre-wrap;word-break:break-word;font:11px/1.6 ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--dsw-alias-label-secondary)}.wb-run-reply{margin-top:13px}.wb-run-reply strong{display:block;margin-bottom:6px;color:var(--dsw-alias-label-secondary);font-size:10px}.wb-run-reply{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;line-height:1.55}
       @media(max-width:880px){.wb-status{grid-template-columns:1fr 1fr}.wb-status-main{grid-column:1/-1}}@media(max-width:680px){.wb-page{padding:18px 13px 35px}.wb-topbar,.wb-intro,.wb-command-head{align-items:flex-start;flex-direction:column}.wb-top-actions,.wb-actions{width:100%;justify-content:space-between}.wb-form{display:flex;flex-direction:column}.wb-grid{grid-template-columns:1fr}.wb-wide{grid-column:auto}.wb-preview-grid{grid-template-columns:1fr}.wb-form-actions{align-items:flex-start;flex-direction:column}.wb-form-actions-right{width:100%;justify-content:flex-end}.wb-status{grid-template-columns:1fr}.wb-status-main{grid-column:auto}.wb-metrics{grid-template-columns:1fr 1fr}}
     `
 
@@ -135,16 +152,22 @@ window.__ModuleLoader__.load({
       const [decisionBusy, setDecisionBusy] = React.useState(false)
       const [decisionNotice, setDecisionNotice] = React.useState('')
       const [audit, setAudit] = React.useState([])
+      const [dryRun, setDryRun] = React.useState(null)
+      const [dispatchBusy, setDispatchBusy] = React.useState(false)
+      const [dispatchError, setDispatchError] = React.useState('')
+      const [runs, setRuns] = React.useState([])
+      const [currentRun, setCurrentRun] = React.useState(null)
 
       const load = React.useCallback(async () => {
         setBusy(true); setError(false)
         try {
-          // All three requests are read-only GETs against this plugin's own
-          // Host routes. The model catalog and audit list are optional.
-          const [response, modelsResponse, auditResponse] = await Promise.all([
+          // Every request is a read-only GET against this plugin's own Host
+          // routes. Model catalog, audit and run list are optional.
+          const [response, modelsResponse, auditResponse, runsResponse] = await Promise.all([
             fetch('/dsh-workbench/api/state-v2', { cache: 'no-store', credentials: 'same-origin' }),
             fetch('/dsh-workbench/api/models', { cache: 'no-store', credentials: 'same-origin' }).catch(() => null),
             fetch('/dsh-workbench/api/audit?limit=30', { cache: 'no-store', credentials: 'same-origin' }).catch(() => null),
+            fetch('/dsh-workbench/api/runs', { cache: 'no-store', credentials: 'same-origin' }).catch(() => null),
           ])
           if (!response.ok) throw new Error('HTTP ' + response.status)
           const next = await response.json()
@@ -167,6 +190,18 @@ window.__ModuleLoader__.load({
               const auditPayload = await auditResponse.json()
               if (auditPayload && Array.isArray(auditPayload.entries)) setAudit(auditPayload.entries)
             } catch { /* keep previous audit */ }
+          }
+          if (runsResponse && runsResponse.ok) {
+            try {
+              const runsPayload = await runsResponse.json()
+              if (runsPayload && Array.isArray(runsPayload.items)) {
+                setRuns(runsPayload.items)
+                setCurrentRun(prev => {
+                  if (!prev) return prev
+                  return runsPayload.items.find(item => item.runId === prev.runId) || prev
+                })
+              }
+            } catch { /* keep previous runs */ }
           }
           const state = next.state || {}
           setGoal(String(firstValue(state.goal, state.mainline) || ''))
@@ -202,14 +237,80 @@ window.__ModuleLoader__.load({
       const decisions = String(data?.decisions || '').trim()
       const memory = memoryText(data, state, t)
 
-      function makePreview(event) {
+      const execution = data?.execution || {}
+
+      async function makePreview(event) {
         event?.preventDefault?.()
-        setPreview({ goal: goal.trim(), plan: plan.trim(), instruction: instruction.trim(), model })
+        const local = { goal: goal.trim(), plan: plan.trim(), instruction: instruction.trim(), model }
+        setPreview(local)
+        setDispatchError('')
+        try {
+          const dry = await postJson('/dsh-workbench/api/dispatch', { ...local, dryRun: true })
+          setDryRun(dry)
+        } catch (error) {
+          setDryRun({ ok: false, available: false, error: String(error?.message || t('dispatchFailed')) })
+        }
       }
 
       function clearForm() {
-        setGoal(''); setPlan(''); setInstruction(''); setPreview(null)
+        setGoal(''); setPlan(''); setInstruction(''); setPreview(null); setDryRun(null); setDispatchError('')
       }
+
+      async function confirmDispatch() {
+        setDispatchBusy(true); setDispatchError('')
+        try {
+          const payload = await postJson('/dsh-workbench/api/dispatch', {
+            goal: goal.trim(),
+            plan: plan.trim(),
+            instruction: instruction.trim(),
+            model,
+          })
+          if (payload.run) {
+            setCurrentRun(payload.run)
+            setRuns(prev => [payload.run, ...prev].slice(0, 20))
+          }
+          if (payload.warning) setDispatchError(payload.warning)
+          await load()
+        } catch (error) {
+          setDispatchError(String(error?.message || t('dispatchFailed')))
+        } finally {
+          setDispatchBusy(false)
+        }
+      }
+
+      async function refreshRuns() {
+        try {
+          const response = await fetch('/dsh-workbench/api/runs', { cache: 'no-store', credentials: 'same-origin' })
+          const payload = await response.json()
+          if (payload && Array.isArray(payload.items)) {
+            setRuns(payload.items)
+            setCurrentRun(prev => prev ? (payload.items.find(item => item.runId === prev.runId) || prev) : prev)
+          }
+        } catch { /* keep previous runs */ }
+      }
+
+      async function cancelRun() {
+        if (!currentRun) return
+        setDispatchBusy(true); setDispatchError('')
+        try {
+          const payload = await postJson('/dsh-workbench/api/runs/cancel', { runId: currentRun.runId })
+          if (payload.run) setCurrentRun(payload.run)
+          await refreshRuns()
+        } catch (error) {
+          setDispatchError(String(error?.message || t('dispatchFailed')))
+        } finally {
+          setDispatchBusy(false)
+        }
+      }
+
+      // Poll only while a dispatched run is still running, and only in a real
+      // browser (the headless harness has no document/timers).
+      React.useEffect(() => {
+        if (typeof document === 'undefined') return
+        if (!currentRun || currentRun.status !== 'running') return
+        const timer = setTimeout(() => { refreshRuns() }, 4000)
+        return () => clearTimeout(timer)
+      }, [currentRun?.runId, currentRun?.status])
 
       function openEdit() {
         setDraft({
@@ -283,7 +384,7 @@ window.__ModuleLoader__.load({
             h('div', { className: 'wb-brand-meta' }, t('subtitle')))),
         h('div', { className: 'wb-top-actions' },
           h('span', { className: 'wb-badge' }, t('readOnly')),
-          h('span', { className: 'wb-badge wb-safe' }, t('previewOnly')),
+          h('span', { className: 'wb-badge wb-safe' }, execution.controller && execution.enabled ? t('liveDispatch') : t('previewOnly')),
           h('button', { className: 'wb-button', type: 'button', onClick: load, disabled: busy }, busy ? t('loading') : t('refresh'))))
 
       const intro = h('div', { className: 'wb-intro' },
@@ -319,19 +420,54 @@ window.__ModuleLoader__.load({
             h('span', { className: 'wb-form-note' }, t('previewHint')),
             h('div', { className: 'wb-form-actions-right' },
               h('button', { className: 'wb-button', type: 'button', onClick: clearForm }, t('clear')),
-              h('button', { className: 'wb-button wb-button-primary', type: 'submit' }, t('preview'))))),
-        preview && h('div', { className: 'wb-preview', 'aria-live': 'polite' },
-          h('div', { className: 'wb-preview-title' },
-            h('span', null, t('previewReady')),
-            h('span', { className: 'wb-badge wb-safe' }, t('safe'))),
-          h('div', { className: 'wb-preview-grid' },
-            h('div', { className: 'wb-preview-item' }, h('strong', null, t('previewGoal')), h('span', null, preview.goal || t('notSet'))),
-            h('div', { className: 'wb-preview-item' }, h('strong', null, t('previewModel')), h('span', null, preview.model || t('modelPlaceholder'))),
-            h('div', { className: 'wb-preview-item' }, h('strong', null, t('previewPlan')), h('span', null, preview.plan || t('emptyPlan'))),
-            h('div', { className: 'wb-preview-item' }, h('strong', null, t('previewInstruction')), h('span', null, preview.instruction || t('noInstruction'))))),
-        memoryOpen && h('div', { className: 'wb-memory-preview' },
-          h('strong', null, t('memoryPreview')),
-          h('pre', null, memory)))
+              h('button', { className: 'wb-button wb-button-primary', type: 'submit' }, t('preview'))))))
+      const previewBlock = preview && h('div', { className: 'wb-preview', 'aria-live': 'polite' },
+        h('div', { className: 'wb-preview-title' },
+          h('span', null, t('previewReady')),
+          h('span', { className: 'wb-badge wb-safe' }, t('safe'))),
+        h('div', { className: 'wb-preview-grid' },
+          h('div', { className: 'wb-preview-item' }, h('strong', null, t('previewGoal')), h('span', null, preview.goal || t('notSet'))),
+          h('div', { className: 'wb-preview-item' }, h('strong', null, t('previewModel')), h('span', null, preview.model || t('modelPlaceholder'))),
+          h('div', { className: 'wb-preview-item' }, h('strong', null, t('previewPlan')), h('span', null, preview.plan || t('emptyPlan'))),
+          h('div', { className: 'wb-preview-item' }, h('strong', null, t('previewInstruction')), h('span', null, preview.instruction || t('noInstruction')))),
+        h('div', { className: 'wb-dispatch' },
+          h('div', { className: 'wb-form-note' }, !execution.controller ? t('executionUnavailable') : execution.enabled ? t('executionEnabled') + ' · ' + String(execution.cwd || '') : t('executionDisabled')),
+          dryRun?.prompt && h('pre', { className: 'wb-dispatch-prompt' }, dryRun.prompt),
+          h('div', { className: 'wb-form-actions-right' },
+            h('button', { className: 'wb-button', type: 'button', onClick: clearForm }, t('clear')),
+            execution.controller && execution.enabled && h('button', {
+              className: 'wb-button wb-button-primary',
+              type: 'button',
+              onClick: confirmDispatch,
+              disabled: dispatchBusy || !goal.trim(),
+            }, dispatchBusy ? t('saving') : t('confirmRun')))),
+        h('div', { className: 'wb-form-note' }, t('confirmHint')),
+        dispatchError && h('div', { className: 'wb-edit-error', role: 'alert' }, dispatchError))
+
+      const memoryBlock = memoryOpen && h('div', { className: 'wb-card wb-wide wb-memory-preview' },
+        h('strong', null, t('memoryPreview')),
+        h('pre', null, memory))
+
+      const runStatusLabel = status => status === 'running' ? t('runRunning')
+        : status === 'done' ? t('runDone')
+          : status === 'cancelled' ? t('runCancelled')
+            : status === 'error' ? t('runError') : t('unknown')
+
+      const runCard = currentRun && h('section', { className: 'wb-card wb-wide wb-run' },
+        h('div', { className: 'wb-card-heading' },
+          h('h2', null, t('runTitle')),
+          h('div', { className: 'wb-actions' },
+            h('span', { className: 'wb-badge wb-safe' }, runStatusLabel(currentRun.status)),
+            h('button', { className: 'wb-button', type: 'button', onClick: refreshRuns }, t('refreshRun')),
+            currentRun.status === 'running' && h('button', { className: 'wb-button', type: 'button', onClick: cancelRun, disabled: dispatchBusy }, t('cancelRun')),
+            h('button', { className: 'wb-button', type: 'button', onClick: () => setCurrentRun(null) }, t('dismissRun')))),
+        h('div', { className: 'wb-preview-grid' },
+          h('div', { className: 'wb-preview-item' }, h('strong', null, t('sessionLabel')), h('span', null, currentRun.sessionId || '—')),
+          h('div', { className: 'wb-preview-item' }, h('strong', null, t('previewModel')), h('span', null, currentRun.model || t('modelPlaceholder'))),
+          h('div', { className: 'wb-preview-item' }, h('strong', null, t('previewGoal')), h('span', null, currentRun.goal || '—')),
+          h('div', { className: 'wb-preview-item' }, h('strong', null, t('status')), h('span', null, runStatusLabel(currentRun.status)))),
+        h('div', { className: 'wb-run-reply' }, h('strong', null, t('lastReply')), currentRun.reply || t('noReply')),
+        dispatchError && h('div', { className: 'wb-edit-error', role: 'alert' }, dispatchError))
 
       const continuityRead = h('div', null,
         h('div', { className: 'wb-mainline' }, displayValue(state.mainline, t('noData'))),
@@ -438,6 +574,9 @@ window.__ModuleLoader__.load({
       } else {
         body = h('div', { className: 'wb-content' },
           commandCard,
+          previewBlock,
+          memoryBlock,
+          runCard,
           continuityCard,
           h('div', { className: 'wb-grid' }, memoryCard, tasksCard, ledgerCard, decisionsCard, auditCard),
           h('footer', { className: 'wb-foot' },

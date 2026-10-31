@@ -43,8 +43,10 @@ const payloads = {
     decisions: '### 2026-10-31\n决策一',
     tasks: [{ id: 'T-001', status: '绿', goal: '测试任务' }],
     ledger: { rows: [], totalTokens: 0, greenCards: 1 },
+    execution: { enabled: true, cwd: 'D:/workspace', controller: true },
     fetchedAt: '2026-10-31T00:00:00.000Z',
   },
+  '/dsh-workbench/api/runs': { ok: true, items: [] },
   '/dsh-workbench/api/models': {
     ok: true,
     available: true,

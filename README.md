@@ -1,11 +1,12 @@
 # DSH Workbench
 
-A small Cordis bundle for DeepSeek Harness that adds a **Workbench command center** panel to the Web UI. It displays persistent workbench state, recent decisions, relay task cards, token-ledger rows, configurable primary/secondary memory previews, and a local command draft. It can also edit the continuity fields and append decisions, recording every write in an audit trail. Model execution is still out of scope: the panel does not call a model, create a session, or mutate a conversation.
+A small Cordis bundle for DeepSeek Harness that adds a **Workbench command center** panel to the Web UI. It displays persistent workbench state, recent decisions, relay task cards, token-ledger rows, configurable primary/secondary memory previews, and a local command draft. It can edit the continuity fields, append decisions, record every write in an audit trail, and — when the workspace explicitly opts in — dispatch one composed instruction into a real DSH Session through the Host `sessionController`. It never calls a provider directly and never bypasses DSH permissions or the session lifecycle.
 
 ## Features
 
 - Adds a `Workbench` main panel and sidebar entry.
-- Provides a command-center draft form for goal, plan, instruction, and model; submit only builds a local preview.
+- Provides a command-center draft form for goal, plan, instruction, and model; preview composes the exact prompt and shows whether dispatch is available.
+- Dispatches one instruction into a real DSH Session via `POST /dsh-workbench/api/dispatch` (Host `sessionController.create` → optional `selectModel` → `prompt`), with `GET /dsh-workbench/api/runs` for status/reply and `POST /dsh-workbench/api/runs/cancel` for cancellation. Dispatch is opt-in per workspace (`execution.enabled`), never silent, and audited.
 - Editable continuity: mainline, checkpoint, next actions and red lines can be saved from the panel (`POST /dsh-workbench/api/state-edit`), and decisions can be appended (`POST /dsh-workbench/api/decision-add`).
 - Append-only audit trail: every panel write records time, action, request id and a compact before/after summary in `audit.jsonl`, shown in the panel via `GET /dsh-workbench/api/audit`.
 - Lists the profile's real model routes in the selector via the read-only `llm` service catalog (`/dsh-workbench/api/models`), pre-selecting the current default model without calling it.
@@ -39,14 +40,27 @@ After installation, refresh the Harness Web UI and select **Workbench** in the s
 
 The plugin searches upward from its installed package directory for a directory containing `state.json` and uses that as the workbench directory. It searches upward for either `relay/ledger.csv` or `ledger.csv` to locate relay data. Explicit environment overrides take priority:
 
-- `DSH_WORKBENCH_DIR`: directory containing `state.json`, `state.md`, and optional `decisions.md` / `ledger.json` / `audit.jsonl`.
+- `DSH_WORKBENCH_DIR`: directory containing `state.json`, `state.md`, and optional `decisions.md` / `ledger.json` / `audit.jsonl` / `runs.json`.
 - `DSH_RELAY_DIR`: directory containing optional `ledger.csv` and `cards/`.
 
-When no data is found, the panel remains available and presents empty states. The Host `wb_set` tool creates the workbench directory if needed. Panel edits update `state.json` only (they do not rewrite the richer `state.md` prose) and appends to `audit.jsonl`.
+When no data is found, the panel remains available and presents empty states. The Host `wb_set` tool creates the workbench directory if needed. Panel edits update `state.json` only (they do not rewrite the richer `state.md` prose) and appends to `audit.jsonl`. Dispatched runs are recorded in `runs.json` (last 50).
+
+Dispatching is opt-in per workspace in `workbench.config.json`:
+
+```json
+{
+  "execution": {
+    "enabled": true,
+    "cwd": "D:/path/to/workspace"
+  }
+}
+```
+
+`execution.cwd` is the Session workspace passed to `sessionController.create`; it defaults to the workbench directory itself (or its parent when the directory name starts with `_`). `DSH_WORKBENCH_EXECUTION=1` enables dispatch without a config file; an explicit `enabled: false` keeps it off.
 
 ## Security and privacy
 
-Read endpoints reject non-loopback hosts and apply `connection.requestRejection` before returning workspace data. Write endpoints (`state-edit`, `decision-add`) apply the same loopback + browser-trust checks, accept only POST with a bounded JSON body (64 KiB), validate field types and lengths, and record each accepted write in `audit.jsonl`. The model catalog only reads the Host `llm` service (`listProviders`/`listModels`) and the current default selection; it never calls a model, selects a model, or changes provider configuration. Memory sources are capped at 256 KiB per file and 12,000 characters per source; configured paths are constrained to the workbench root, including existing symlink targets, and responses expose relative source names rather than absolute paths. Workspace files and relay data are not included in this repository. Do not commit private project files, credentials, or generated ledgers.
+Read endpoints reject non-loopback hosts and apply `connection.requestRejection` before returning workspace data. Write endpoints (`state-edit`, `decision-add`, `dispatch`, `runs/cancel`) apply the same loopback + browser-trust checks, accept only POST with a bounded JSON body (64 KiB), validate field types and lengths, and record each accepted write in `audit.jsonl`. Dispatch requires an explicit `dryRun: false` request, an opt-in workspace config, and a Host `sessionController`; it creates a durable Session and sends one instruction through DSH's normal Agent loop, so the profile's tool permissions, approvals and cancellation lifecycle still apply. The model catalog only reads the Host `llm` service (`listProviders`/`listModels`) and the current default selection; it never calls a model, selects a model, or changes provider configuration. Memory sources are capped at 256 KiB per file and 12,000 characters per source; configured paths are constrained to the workbench root, including existing symlink targets, and responses expose relative source names rather than absolute paths. Workspace files and relay data are not included in this repository. Do not commit private project files, credentials, or generated ledgers.
 
 ## Development checks
 

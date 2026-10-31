@@ -5,7 +5,7 @@
 
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, realpathSync, rmSync } from 'node:fs'
 
 const here = new URL('.', import.meta.url)
 const indexUrl = new URL('./index.js', here)
@@ -16,12 +16,31 @@ writeFileSync(join(tempWorkspace, 'primary.md'), 'Primary memory fixture.\n', 'u
 writeFileSync(join(tempWorkspace, 'secondary.md'), 'Secondary memory fixture.\n', 'utf8')
 writeFileSync(join(tempWorkspace, 'workbench.config.json'), JSON.stringify({
   memory: { primary: ['primary.md'], secondary: ['secondary.md'], budgetTokens: 91 },
+  execution: { enabled: true, cwd: '.' },
 }), 'utf8')
 process.env.DSH_WORKBENCH_DIR = tempWorkspace
 
 const registered = []
 let requestRejection = null
 let streamCalls = 0
+let sessionRunning = true
+const dispatchCalls = { create: [], selectModel: [], prompt: [], cancel: [] }
+const createdSessionId = 'sess-harness-1'
+const mockSessionController = {
+  create: async (opts) => { dispatchCalls.create.push(opts); return { sessionId: createdSessionId } },
+  selectModel: async (request) => { dispatchCalls.selectModel.push(request); return { provider: request.provider, model: request.model } },
+  prompt: async (request) => { dispatchCalls.prompt.push(request); return { accepted: true } },
+  cancel: async (request) => { dispatchCalls.cancel.push(request); return { accepted: true } },
+  list: async () => [{ sessionId: createdSessionId, agentAvailable: true, running: sessionRunning, blank: false, updatedAt: Date.now() }],
+}
+const mockSessions = {
+  get: (id) => id === createdSessionId ? {
+    snapshotEvents: () => [
+      { type: 'turn/end', data: { reason: { kind: 'end_turn' } } },
+      { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '完成：测试回复。' }] } } },
+    ],
+  } : undefined,
+}
 const mockLlm = {
   listProviders: () => ['deepseek-official', 'gongyizhan'],
   listModels: (provider) => provider === 'gongyizhan'
@@ -34,7 +53,11 @@ const ctx = {
   webServer: { register: (r) => registered.push({ regType: 'web', ...r }) },
   tools: { register: (t) => registered.push({ regType: 'tool', ...t }) },
   connection: { requestRejection: () => requestRejection }, // null = trusted
-  get: (name) => name === 'llm' ? mockLlm : name === 'agentDefaultModel' ? mockDefaultModel : undefined,
+  get: (name) => name === 'llm' ? mockLlm
+    : name === 'agentDefaultModel' ? mockDefaultModel
+      : name === 'sessionController' ? mockSessionController
+        : name === 'sessions' ? mockSessions
+          : undefined,
 }
 
 const mod = await import(indexUrl)
@@ -47,6 +70,9 @@ const modelsRoute = registered.find(r => r.regType === 'web' && r.path === '/dsh
 const stateEditRoute = registered.find(r => r.regType === 'web' && r.path === '/dsh-workbench/api/state-edit')
 const decisionRoute = registered.find(r => r.regType === 'web' && r.path === '/dsh-workbench/api/decision-add')
 const auditRoute = registered.find(r => r.regType === 'web' && r.path === '/dsh-workbench/api/audit')
+const dispatchRoute = registered.find(r => r.regType === 'web' && r.path === '/dsh-workbench/api/dispatch')
+const runsRoute = registered.find(r => r.regType === 'web' && r.path === '/dsh-workbench/api/runs')
+const runsCancelRoute = registered.find(r => r.regType === 'web' && r.path === '/dsh-workbench/api/runs/cancel')
 const toolNames = registered.filter(r => r.regType === 'tool').map(r => r.name)
 
 console.log('registered count:', registered.length)
@@ -54,13 +80,15 @@ console.log('route path:', route?.path)
 console.log('preview paths:', previewRoute?.path, previewVersionRoute?.path)
 console.log('models path:', modelsRoute?.path)
 console.log('write paths:', stateEditRoute?.path, decisionRoute?.path, auditRoute?.path)
+console.log('dispatch paths:', dispatchRoute?.path, runsRoute?.path, runsCancelRoute?.path)
 console.log('tool names:', toolNames)
 
 const ok =
   route && route.path === '/dsh-workbench/api/state-v2' &&
   previewRoute && previewVersionRoute && modelsRoute && stateEditRoute && decisionRoute && auditRoute &&
-  ['wb_get', 'wb_set', 'wb_close', 'wb_models'].every(n => toolNames.includes(n)) &&
-  toolNames.length === 4
+  dispatchRoute && runsRoute && runsCancelRoute &&
+  ['wb_get', 'wb_set', 'wb_close', 'wb_models', 'wb_runs'].every(n => toolNames.includes(n)) &&
+  toolNames.length === 5
 if (!ok) { console.error('FAIL: registration mismatch'); process.exit(1) }
 
 // Every Host tool must expose a JSON Schema of type "object". Providers reject
@@ -249,6 +277,131 @@ if (remoteRes.statusCode !== 403) { console.error('FAIL: non-loopback write acce
 
 console.log('audit entries:', audit.entries.length, '| actions:', actions.join(', '))
 console.log('state-edit guards: 405/401/403/413/400 all enforced')
+
+// --- dispatch: dry run, disabled gate, real dispatch, status, cancel --------
+const configPath = join(tempWorkspace, 'workbench.config.json')
+const configWithExecution = JSON.stringify({
+  memory: { primary: ['primary.md'], secondary: ['secondary.md'], budgetTokens: 91 },
+  execution: { enabled: true, cwd: '.' },
+})
+const configWithoutExecution = JSON.stringify({
+  memory: { primary: ['primary.md'], secondary: ['secondary.md'], budgetTokens: 91 },
+})
+
+// The state payload must advertise the execution capability.
+const stateRes2 = response()
+await route.handler(getReq(route.path), stateRes2)
+const statePayload2 = JSON.parse(stateRes2.body)
+if (statePayload2.execution?.controller !== true || statePayload2.execution?.enabled !== true) {
+  console.error('FAIL: state payload execution info', statePayload2.execution)
+  process.exit(1)
+}
+
+const dryRes = response()
+await dispatchRoute.handler(postReq(dispatchRoute.path, { goal: '闭环测试', plan: '步骤', instruction: '注意', model: 'deepseek-official/deepseek-flash', dryRun: true }), dryRes)
+if (dryRes.statusCode !== 200) { console.error('FAIL: dry-run status', dryRes.statusCode, dryRes.body); process.exit(1) }
+const dry = JSON.parse(dryRes.body)
+if (dry.available !== true || dry.executionEnabled !== true || !String(dry.prompt).includes('闭环测试')) {
+  console.error('FAIL: dry-run payload', dry)
+  process.exit(1)
+}
+if (dispatchCalls.create.length !== 0) { console.error('FAIL: dry run created a session'); process.exit(1) }
+
+writeFileSync(configPath, configWithoutExecution, 'utf8')
+const disabledRes = response()
+await dispatchRoute.handler(postReq(dispatchRoute.path, { goal: '不应执行' }), disabledRes)
+if (disabledRes.statusCode !== 409) { console.error('FAIL: disabled execution accepted', disabledRes.statusCode); process.exit(1) }
+writeFileSync(configPath, configWithExecution, 'utf8')
+
+const dispatchRes = response()
+await dispatchRoute.handler(postReq(dispatchRoute.path, {
+  goal: '闭环测试：派发一次真实任务',
+  plan: '1. 检查 2. 执行',
+  instruction: '只做最小改动',
+  model: 'deepseek-official/deepseek-flash',
+}), dispatchRes)
+if (dispatchRes.statusCode !== 200) { console.error('FAIL: dispatch status', dispatchRes.statusCode, dispatchRes.body); process.exit(1) }
+const dispatch = JSON.parse(dispatchRes.body)
+if (dispatch.ok !== true || dispatch.run?.status !== 'running' || dispatch.run?.sessionId !== createdSessionId) {
+  console.error('FAIL: dispatch run', dispatch)
+  process.exit(1)
+}
+const run = dispatch.run
+if (dispatchCalls.create.length !== 1 || dispatchCalls.create[0].cwd !== realpathSync(tempWorkspace)) {
+  console.error('FAIL: create cwd', dispatchCalls.create)
+  process.exit(1)
+}
+if (dispatchCalls.selectModel.length !== 1 || dispatchCalls.selectModel[0].provider !== 'deepseek-official') {
+  console.error('FAIL: selectModel call', dispatchCalls.selectModel)
+  process.exit(1)
+}
+if (!dispatchCalls.prompt[0]?.content?.[0]?.text?.includes('闭环测试')) {
+  console.error('FAIL: prompt content', dispatchCalls.prompt)
+  process.exit(1)
+}
+const persistedRuns = JSON.parse(readFileSync(join(tempWorkspace, 'runs.json'), 'utf8'))
+if (!persistedRuns.items.some(item => item.runId === run.runId && item.status === 'running')) {
+  console.error('FAIL: run registry not written', persistedRuns)
+  process.exit(1)
+}
+
+const runsRes = response()
+await runsRoute.handler(getReq(runsRoute.path), runsRes)
+const runsPayload = JSON.parse(runsRes.body)
+if (runsPayload.items?.[0]?.status !== 'running') { console.error('FAIL: live run status', runsPayload.items?.[0]); process.exit(1) }
+
+sessionRunning = false
+const runsDoneRes = response()
+await runsRoute.handler(getReq(runsRoute.path), runsDoneRes)
+const runsDone = JSON.parse(runsDoneRes.body)
+const doneRun = runsDone.items.find(item => item.runId === run.runId)
+if (doneRun?.status !== 'done' || !String(doneRun.reply || '').includes('完成：测试回复。')) {
+  console.error('FAIL: finished run status/reply', doneRun)
+  process.exit(1)
+}
+
+const wbRunsTool = registered.find(r => r.regType === 'tool' && r.name === 'wb_runs')
+const wbRunsResult = await wbRunsTool.execute({})
+if (!wbRunsResult?.text?.includes(run.runId)) { console.error('FAIL: wb_runs tool output', wbRunsResult); process.exit(1) }
+
+const cancelRes = response()
+await runsCancelRoute.handler(postReq(runsCancelRoute.path, { runId: run.runId }), cancelRes)
+if (cancelRes.statusCode !== 200 || JSON.parse(cancelRes.body).run?.status !== 'cancelled') {
+  console.error('FAIL: cancel result', cancelRes.statusCode, cancelRes.body)
+  process.exit(1)
+}
+if (dispatchCalls.cancel.length !== 1) { console.error('FAIL: controller.cancel not called'); process.exit(1) }
+
+const dispatchGetRes = response()
+await dispatchRoute.handler(getReq(dispatchRoute.path), dispatchGetRes)
+if (dispatchGetRes.statusCode !== 405) { console.error('FAIL: dispatch accepted GET', dispatchGetRes.statusCode); process.exit(1) }
+
+const emptyGoalRes = response()
+await dispatchRoute.handler(postReq(dispatchRoute.path, { goal: '' }), emptyGoalRes)
+if (emptyGoalRes.statusCode !== 400) { console.error('FAIL: empty goal accepted', emptyGoalRes.statusCode); process.exit(1) }
+
+requestRejection = 401
+const untrustedDispatch = response()
+await dispatchRoute.handler(postReq(dispatchRoute.path, { goal: 'x' }), untrustedDispatch)
+if (untrustedDispatch.statusCode !== 401) { console.error('FAIL: untrusted dispatch accepted', untrustedDispatch.statusCode); process.exit(1) }
+requestRejection = null
+
+const remoteDispatch = response()
+await dispatchRoute.handler({ ...postReq(dispatchRoute.path, { goal: 'x' }), headers: { host: '10.0.0.9:55293' } }, remoteDispatch)
+if (remoteDispatch.statusCode !== 403) { console.error('FAIL: non-loopback dispatch accepted', remoteDispatch.statusCode); process.exit(1) }
+
+const auditDispatchRes = response()
+await auditRoute.handler(getReq(auditRoute.path + '?limit=20'), auditDispatchRes)
+const dispatchAudit = JSON.parse(auditDispatchRes.body)
+const dispatchActions = dispatchAudit.entries.map(entry => entry.action)
+if (!dispatchActions.includes('dispatch.start') || !dispatchActions.includes('dispatch.cancel')) {
+  console.error('FAIL: dispatch audit missing', dispatchActions)
+  process.exit(1)
+}
+
+console.log('dispatch:', run.runId, '| session:', run.sessionId, '| dry-run ok | disabled gate ok | cancel ok')
+console.log('dispatch guards: 405/400/401/403 enforced')
+console.log('audit actions:', dispatchActions.slice(0, 6).join(', '))
 
 rmSync(tempRoot, { recursive: true, force: true })
 delete process.env.DSH_WORKBENCH_DIR

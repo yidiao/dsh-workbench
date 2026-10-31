@@ -1,8 +1,15 @@
 {
   "name": "dsh-workbench",
-  "version": "0.3.0",
-  "description": "工作区指挥台：接续状态可编辑、决策可追加、带审计记录，并显示记忆预览、任务卡和运行账本。",
-  "keywords": ["deepseek-harness", "dsh", "cordis", "plugin", "workbench", "ui"],
+  "version": "0.4.0",
+  "description": "工作区指挥台：可编辑接续状态、审计记录、模型路由，并可把一条指令派发到真实 DSH 会话（工作区显式启用）。",
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "cordis",
+    "plugin",
+    "workbench",
+    "ui"
+  ],
   "type": "module",
   "exports": {
     ".": "./index.js",
@@ -10,9 +17,19 @@
     "./locale/*.json": "./locale/*.json",
     "./icon": "./icon.svg"
   },
-  "files": ["index.js", "client.js", "cordis.patch.yml", "README.md", "LICENSE", "locale/*.json", "icon.svg"],
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE",
+    "locale/*.json",
+    "icon.svg"
+  ],
   "dsh": {
-    "bundle": { "patch": "./cordis.patch.yml" },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
     "client": {
       "platform": "web",
       "immediately": true,
