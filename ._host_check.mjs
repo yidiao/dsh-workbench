@@ -3,34 +3,80 @@
 // 2) Invokes the registered API handler against the REAL filesystem to prove the
 //    relay-dir sibling resolution fix returns live ledger data.
 
-import { pathToFileURL } from 'node:url'
 import { join } from 'node:path'
+import { tmpdir } from 'node:os'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 
 const here = new URL('.', import.meta.url)
 const indexUrl = new URL('./index.js', here)
+const tempRoot = mkdtempSync(join(tmpdir(), 'dsh-workbench-host-check-'))
+const tempWorkspace = join(tempRoot, 'workspace')
+mkdirSync(tempWorkspace, { recursive: true })
+writeFileSync(join(tempWorkspace, 'primary.md'), 'Primary memory fixture.\n', 'utf8')
+writeFileSync(join(tempWorkspace, 'secondary.md'), 'Secondary memory fixture.\n', 'utf8')
+writeFileSync(join(tempWorkspace, 'workbench.config.json'), JSON.stringify({
+  memory: { primary: ['primary.md'], secondary: ['secondary.md'], budgetTokens: 91 },
+}), 'utf8')
+process.env.DSH_WORKBENCH_DIR = tempWorkspace
 
 const registered = []
+let requestRejection = null
 const ctx = {
   webServer: { register: (r) => registered.push({ regType: 'web', ...r }) },
   tools: { register: (t) => registered.push({ regType: 'tool', ...t }) },
-  connection: { requestRejection: () => null }, // null = trusted
+  connection: { requestRejection: () => requestRejection }, // null = trusted
 }
 
 const mod = await import(indexUrl)
 await mod.apply(ctx)
 
 const route = registered.find(r => r.regType === 'web' && r.path?.includes('api/state'))
+const previewRoute = registered.find(r => r.regType === 'web' && r.path === '/dsh-workbench/api/preview')
+const previewVersionRoute = registered.find(r => r.regType === 'web' && r.path === '/dsh-workbench/api/preview-v1')
 const toolNames = registered.filter(r => r.regType === 'tool').map(r => r.name)
 
 console.log('registered count:', registered.length)
 console.log('route path:', route?.path)
+console.log('preview paths:', previewRoute?.path, previewVersionRoute?.path)
 console.log('tool names:', toolNames)
 
 const ok =
   route && route.path === '/dsh-workbench/api/state-v2' &&
+  previewRoute && previewVersionRoute &&
   ['wb_get', 'wb_set', 'wb_close'].every(n => toolNames.includes(n)) &&
   toolNames.length === 3
 if (!ok) { console.error('FAIL: registration mismatch'); process.exit(1) }
+
+// Every Host tool must expose a JSON Schema of type "object". Providers reject
+// a null/absent type (e.g. "schema must be a JSON Schema of 'type: \"object\"',
+// got 'type: null'"), so a bare property map is not acceptable.
+for (const tool of registered.filter(r => r.regType === 'tool')) {
+  const schema = tool.parameters
+  if (!schema || schema.type !== 'object') {
+    console.error('FAIL: tool', tool.name, 'parameters.type is', schema?.type, '(expected "object")')
+    process.exit(1)
+  }
+  if (!schema.properties || typeof schema.properties !== 'object') {
+    console.error('FAIL: tool', tool.name, 'parameters.properties missing')
+    process.exit(1)
+  }
+  for (const [key, descriptor] of Object.entries(schema.properties)) {
+    if (typeof descriptor !== 'object' || descriptor === null || typeof descriptor.type !== 'string') {
+      console.error('FAIL: tool', tool.name, 'property', key, 'has no JSON Schema type')
+      process.exit(1)
+    }
+    if ('required' in descriptor) {
+      console.error('FAIL: tool', tool.name, 'property', key, 'uses invalid "required" keyword')
+      process.exit(1)
+    }
+  }
+  if (schema.required !== undefined) {
+    if (!Array.isArray(schema.required) || schema.required.some(name => !(name in schema.properties))) {
+      console.error('FAIL: tool', tool.name, 'required must be an array of declared properties')
+      process.exit(1)
+    }
+  }
+}
 
 // Invoke the live handler against the real FS.
 const chunks = []
@@ -54,4 +100,30 @@ if (!Array.isArray(payload.ledger?.rows) || payload.ledger.rows.length === 0) {
   console.error('FAIL: relay sibling not resolved — ledger rows empty')
   process.exit(1)
 }
+// Preview is loopback + trusted-connection guarded, GET-only, and must expose
+// a disabled execution marker instead of attempting a model call.
+const previewResponse = { statusCode: 0, headers: {}, setHeader(k, v) { this.headers[k] = v }, end(body) { this.body = body } }
+await previewRoute.handler({ method: 'GET', headers: { host: '127.0.0.1:55293' }, url: previewRoute.path }, previewResponse)
+if (previewResponse.statusCode !== 200) { console.error('FAIL: preview status', previewResponse.statusCode); process.exit(1) }
+const preview = JSON.parse(previewResponse.body)
+if (preview.ok !== true || preview.mode !== 'preview' || preview.execution?.enabled !== false || !preview.memory?.fingerprint) {
+  console.error('FAIL: preview payload', preview)
+  process.exit(1)
+}
+if (preview.config?.budgetTokens !== 91 || preview.memory?.primary?.[0]?.source !== 'primary.md' || preview.memory?.secondary?.[0]?.source !== 'secondary.md') {
+  console.error('FAIL: configured sources/budget not resolved', preview.config, preview.memory)
+  process.exit(1)
+}
+if (!preview.memory.snippets.some(item => item.text.includes('Primary memory fixture')) || JSON.stringify(preview).includes(tempRoot)) {
+  console.error('FAIL: preview content/path sanitization', preview.memory)
+  process.exit(1)
+}
+const blockedResponse = { statusCode: 0, headers: {}, setHeader(k, v) { this.headers[k] = v }, end(body) { this.body = body } }
+await previewRoute.handler({ method: 'POST', headers: { host: '127.0.0.1:55293' }, url: previewRoute.path }, blockedResponse)
+if (blockedResponse.statusCode !== 405) { console.error('FAIL: preview accepted non-GET', blockedResponse.statusCode); process.exit(1) }
+console.log('preview.mode:', preview.mode)
+console.log('preview.execution:', preview.execution.status)
+console.log('preview.memory.fingerprint:', preview.memory.fingerprint)
+rmSync(tempRoot, { recursive: true, force: true })
+delete process.env.DSH_WORKBENCH_DIR
 console.log('\nHOST HARNESS PASS')

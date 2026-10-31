@@ -1,7 +1,7 @@
 {
   "name": "dsh-workbench",
-  "version": "0.1.0",
-  "description": "只读工作台面板：显示项目接续状态、任务卡和运行账本。",
+  "version": "0.2.0",
+  "description": "工作区指挥台：显示接续状态、记忆预览、任务卡和运行账本，并提供安全的本地任务草稿。",
   "keywords": ["deepseek-harness", "dsh", "cordis", "plugin", "workbench", "ui"],
   "type": "module",
   "exports": {

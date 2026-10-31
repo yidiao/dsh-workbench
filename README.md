@@ -1,16 +1,19 @@
 # DSH Workbench
 
-A small Cordis bundle for DeepSeek Harness that adds a read-only **Workbench** panel to the Web UI. It displays persistent workbench state, recent decisions, relay task cards, and token-ledger rows. It does not call a model from the panel.
+A small Cordis bundle for DeepSeek Harness that adds a **Workbench command center** panel to the Web UI. It displays persistent workbench state, recent decisions, relay task cards, token-ledger rows, configurable primary/secondary memory previews, and a local command draft. Phase 1 is deliberately preview-only: it does not call a model, create a session, mutate a conversation, or write workspace state from the browser panel.
 
 ## Features
 
 - Adds a `Workbench` main panel and sidebar entry.
+- Provides a command-center draft form for goal, plan, instruction, and model label; submit only builds a local preview.
 - Reads `_workbench/state.json`, `_workbench/state.md`, and `_workbench/decisions.md`.
 - Reads optional `_workbench/ledger.json` and merges it with `relay/ledger.csv` when available.
 - Reads relay cards matching `relay/cards/T-<number>.md` as task summaries.
+- Resolves optional `workbench.config.json`, `dsh-workbench.json`, or `config.json` by upward probing, with `DSH_WORKBENCH_CONFIG`/`DSH_CONFIG` overrides.
+- Supports primary/secondary memory sources from config or `DSH_MEMORY_PRIMARY`/`DSH_MEMORY_SECONDARY`; sources are bounded, hashed, and constrained to the workbench root.
+- Exposes loopback-only GET preview routes (`/dsh-workbench/api/preview` and `/dsh-workbench/api/preview-v1`) with Harness browser trust checks; execution is explicitly disabled in phase 1.
 - Keeps the legacy Host tools `wb_get`, `wb_set`, and `wb_close`.
 - Localized English/Chinese display metadata and UI strings; theme-token-based styling.
-- Snapshot route is loopback-only and guarded by Harness browser trust checks.
 
 ## Requirements
 
@@ -40,7 +43,7 @@ When no data is found, the panel remains available and presents empty states. Th
 
 ## Security and privacy
 
-The panel API is a read-only GET endpoint. It rejects non-loopback hosts and applies `connection.requestRejection` before returning workspace data. Workspace files and relay data are not included in this repository. Do not commit private project files, credentials, or generated ledgers.
+The panel and memory-preview APIs are read-only GET endpoints. They reject non-loopback hosts and apply `connection.requestRejection` before returning workspace data. Memory sources are capped at 256 KiB per file and 12,000 characters per source; configured paths are constrained to the workbench root, including existing symlink targets, and responses expose relative source names rather than absolute paths. Workspace files and relay data are not included in this repository. Do not commit private project files, credentials, or generated ledgers.
 
 ## Development checks
 
