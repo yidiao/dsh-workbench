@@ -43,7 +43,7 @@ const DEFAULT_WB_DIR = findAncestor(PACKAGE_DIR, dir => existsSync(join(dir, 'st
   || join(homedir(), 'dsh-workbench')
 // Probe from the workbench dir first (catches a sibling `relay`), then from the
 // package dir, then fall back to `<workbench>/relay`.
-const DEFAULT_RELAY_DIR = findRelayDir(WB_DIR)
+const DEFAULT_RELAY_DIR = findRelayDir(DEFAULT_WB_DIR)
   || findRelayDir(PACKAGE_DIR)
   || join(DEFAULT_WB_DIR, 'relay')
 const WB_DIR = process.env.DSH_WORKBENCH_DIR || DEFAULT_WB_DIR
