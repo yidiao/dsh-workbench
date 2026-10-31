@@ -1,0 +1,4 @@
+# v0.1：只读面板 + Host 只读快照端点。请仅装到 test profile 验证。
+- insert:
+    - id: dsh-workbench
+      name: dsh-workbench
