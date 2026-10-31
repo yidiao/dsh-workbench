@@ -10,6 +10,8 @@ import { homedir } from 'node:os'
 
 const PACKAGE_DIR = dirname(fileURLToPath(import.meta.url))
 
+// Upward probe: walk from `start` toward the filesystem root until `predicate`
+// matches. Returns the matching directory or undefined. Never hardcodes a path.
 function findAncestor(start, predicate) {
   let current = start
   while (true) {
@@ -20,18 +22,30 @@ function findAncestor(start, predicate) {
   }
 }
 
+// Locate the relay data directory by probing upward. A relay directory holds
+// either `relay/ledger.csv` (preferred) or a bare `ledger.csv`. We probe both
+// from the resolved workbench directory and from the package directory, so the
+// relay folder can legitimately live as a SIBLING of the workbench directory
+// (e.g. `_workbench/` and `relay/` under the same parent) without any path
+// being hardcoded. Env override (DSH_RELAY_DIR) still wins.
+function findRelayDir(start) {
+  let current = start
+  while (true) {
+    if (existsSync(join(current, 'relay', 'ledger.csv'))) return join(current, 'relay')
+    if (existsSync(join(current, 'ledger.csv'))) return current
+    const parent = dirname(current)
+    if (parent === current) return undefined
+    current = parent
+  }
+}
+
 const DEFAULT_WB_DIR = findAncestor(PACKAGE_DIR, dir => existsSync(join(dir, 'state.json')))
   || join(homedir(), 'dsh-workbench')
-const DEFAULT_RELAY_DIR = findAncestor(PACKAGE_DIR, dir =>
-  existsSync(join(dir, 'relay', 'ledger.csv')) || existsSync(join(dir, 'ledger.csv')),
-)
-  ? (() => {
-      const root = findAncestor(PACKAGE_DIR, dir =>
-        existsSync(join(dir, 'relay', 'ledger.csv')) || existsSync(join(dir, 'ledger.csv')),
-      )
-      return existsSync(join(root, 'relay', 'ledger.csv')) ? join(root, 'relay') : root
-    })()
-  : join(DEFAULT_WB_DIR, 'relay')
+// Probe from the workbench dir first (catches a sibling `relay`), then from the
+// package dir, then fall back to `<workbench>/relay`.
+const DEFAULT_RELAY_DIR = findRelayDir(WB_DIR)
+  || findRelayDir(PACKAGE_DIR)
+  || join(DEFAULT_WB_DIR, 'relay')
 const WB_DIR = process.env.DSH_WORKBENCH_DIR || DEFAULT_WB_DIR
 const RELAY_DIR = process.env.DSH_RELAY_DIR || DEFAULT_RELAY_DIR
 const RELAY_LEDGER = join(RELAY_DIR, 'ledger.csv')
