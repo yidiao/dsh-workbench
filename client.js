@@ -15,7 +15,7 @@ window.__ModuleLoader__.load({
       goal: 'Goal', goalPlaceholder: 'What outcome should this work produce?',
       plan: 'Plan', planPlaceholder: 'Outline the smallest useful next steps…',
       instruction: 'Instruction', instructionPlaceholder: 'Draft an instruction for a future run…',
-      model: 'Model', modelPlaceholder: 'Select a model (not executed)',
+      model: 'Model', modelPlaceholder: 'Draft only — do not run', modelsUnavailable: 'Model catalog unavailable in this profile; the choice is recorded locally only.',
       preview: 'Build preview', clear: 'Clear', previewReady: 'Local preview ready',
       previewHint: 'Nothing is sent. This form only prepares a handoff for review.',
       memoryPreview: 'Memory preview', memoryPreviewEntry: 'Open memory preview', closePreview: 'Close preview',
@@ -40,7 +40,7 @@ window.__ModuleLoader__.load({
       goal: '目标', goalPlaceholder: '这次工作要产出什么结果？',
       plan: '计划', planPlaceholder: '列出最小可行的下一步…',
       instruction: '指令', instructionPlaceholder: '为未来的一次执行起草指令…',
-      model: '模型', modelPlaceholder: '选择模型（不会执行）',
+      model: '模型', modelPlaceholder: '仅草稿——不执行模型', modelsUnavailable: '当前 profile 没有可用的模型目录；这里只记录选择，不会执行。',
       preview: '生成预览', clear: '清空', previewReady: '本地预览已生成',
       previewHint: '内容不会发送；表单只负责准备一份待审阅的接续草稿。',
       memoryPreview: '记忆预览', memoryPreviewEntry: '打开记忆预览', closePreview: '关闭预览',
@@ -58,7 +58,7 @@ window.__ModuleLoader__.load({
     }
 
     const CSS = `
-      .wb-page{box-sizing:border-box;min-height:100%;padding:24px clamp(16px,4vw,56px) 56px;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-base);font:inherit}
+      .wb-page{box-sizing:border-box;height:100%;overflow-y:auto;overflow-x:hidden;padding:24px clamp(16px,4vw,56px) 56px;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-base);font:inherit}
       .wb-wrap{max-width:1180px;margin:0 auto}
       .wb-topbar{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:12px 16px;margin-bottom:22px;border:1px solid var(--dsw-alias-border-l1);border-radius:14px;background:var(--dsw-alias-bg-layer-1)}
       .wb-brand{display:flex;align-items:center;gap:12px;min-width:0}
@@ -69,7 +69,7 @@ window.__ModuleLoader__.load({
       .wb-safe{color:var(--dsw-alias-state-success-primary);border-color:color-mix(in srgb,var(--dsw-alias-state-success-primary) 35%,var(--dsw-alias-border-l1));letter-spacing:0;text-transform:none}
       .wb-button{border:1px solid var(--dsw-alias-border-l1);border-radius:9px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);padding:8px 12px;font:inherit;font-size:12px;cursor:pointer;transition:border-color .15s ease,background .15s ease}
       .wb-button:hover{border-color:var(--dsw-alias-brand-primary);background:color-mix(in srgb,var(--dsw-alias-brand-primary) 6%,var(--dsw-alias-bg-layer-1))}.wb-button:disabled{opacity:.55;cursor:wait}
-      .wb-button-primary{border-color:var(--dsw-alias-brand-primary);background:var(--dsw-alias-brand-primary);color:var(--dsw-alias-label-on-brand,#fff);font-weight:700}.wb-button-primary:hover{background:var(--dsw-alias-brand-primary)}
+      .wb-button-primary{border-color:var(--dsw-alias-button-primary-fill,#356be8);background:var(--dsw-alias-button-primary-fill,#356be8);color:var(--dsw-alias-label-primary-foreground,#fff);font-weight:700}.wb-button-primary:hover{border-color:var(--dsw-alias-button-primary-fill,#356be8);background:var(--dsw-alias-interactive-bg-hover,var(--dsw-alias-button-primary-fill,#356be8));filter:brightness(1.04)}
       .wb-intro{display:flex;justify-content:space-between;align-items:flex-end;gap:20px;margin:0 2px 20px}.wb-kicker{font-size:10px;font-weight:750;letter-spacing:.18em;color:var(--dsw-alias-brand-primary);text-transform:uppercase}.wb-title{margin:6px 0 3px;font-size:clamp(25px,3.6vw,36px);line-height:1.12;letter-spacing:-.035em;font-weight:750}.wb-subtitle{margin:0;color:var(--dsw-alias-label-secondary);font-size:13px}
       .wb-card{min-width:0;border:1px solid var(--dsw-alias-border-l1);border-radius:14px;background:var(--dsw-alias-bg-layer-1);padding:18px 20px;box-shadow:0 4px 18px color-mix(in srgb,var(--dsw-alias-label-primary) 4%,transparent)}
       .wb-card h2{margin:0 0 13px;font-size:12px;font-weight:750;letter-spacing:.04em;color:var(--dsw-alias-label-secondary)}.wb-card-heading{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:13px}.wb-card-heading h2{margin:0}
@@ -112,20 +112,37 @@ window.__ModuleLoader__.load({
       const [goal, setGoal] = React.useState('')
       const [plan, setPlan] = React.useState('')
       const [instruction, setInstruction] = React.useState('')
-      const [model, setModel] = React.useState('preview')
+      const [model, setModel] = React.useState('')
       const [preview, setPreview] = React.useState(null)
       const [memoryOpen, setMemoryOpen] = React.useState(false)
+      const [catalog, setCatalog] = React.useState(null)
 
       const load = React.useCallback(async () => {
         setBusy(true); setError(false)
         try {
-          // This is intentionally the only request made by the panel, and it is
-          // a read-only GET to the local state endpoint.
-          const response = await fetch('/dsh-workbench/api/state-v2', { cache: 'no-store', credentials: 'same-origin' })
+          // Both requests are read-only GETs against this plugin's own Host
+          // routes. The model catalog is optional: when the profile exposes no
+          // llm service the panel keeps working with a free-form draft.
+          const [response, modelsResponse] = await Promise.all([
+            fetch('/dsh-workbench/api/state-v2', { cache: 'no-store', credentials: 'same-origin' }),
+            fetch('/dsh-workbench/api/models', { cache: 'no-store', credentials: 'same-origin' }).catch(() => null),
+          ])
           if (!response.ok) throw new Error('HTTP ' + response.status)
           const next = await response.json()
           if (!next || next.ok !== true) throw new Error('invalid response')
           setData(next)
+          if (modelsResponse && modelsResponse.ok) {
+            try {
+              const models = await modelsResponse.json()
+              if (models && models.ok === true) {
+                setCatalog(models)
+                if (models.current?.provider && models.current?.model) {
+                  const current = models.current.provider + '/' + models.current.model
+                  setModel(prev => prev || current)
+                }
+              }
+            } catch { /* keep previous catalog */ }
+          }
           const state = next.state || {}
           setGoal(String(firstValue(state.goal, state.mainline) || ''))
           setPlan(asList(state.next).join('\n'))
@@ -194,9 +211,10 @@ window.__ModuleLoader__.load({
           h('div', { className: 'wb-field wb-field-model' },
             h('label', { htmlFor: 'wb-model' }, t('model')),
             h('select', { id: 'wb-model', value: model, onChange: event => setModel(event.target.value) },
-              h('option', { value: 'preview' }, t('modelPlaceholder')),
-              h('option', { value: 'deepseek-chat' }, 'DeepSeek Chat'),
-              h('option', { value: 'deepseek-reasoner' }, 'DeepSeek Reasoner'))),
+              h('option', { value: '' }, t('modelPlaceholder')),
+              (catalog?.groups || []).map(group => h('optgroup', { key: group.id, label: group.name || group.id },
+                (group.models || []).map(item => h('option', { key: group.id + '/' + item.id, value: group.id + '/' + item.id }, item.name || item.id))))),
+            catalog && catalog.available === false && h('span', { className: 'wb-form-note' }, t('modelsUnavailable'))),
           h('div', { className: 'wb-field wb-field-plan' },
             h('label', { htmlFor: 'wb-plan' }, t('plan')),
             h('textarea', { id: 'wb-plan', value: plan, onChange: event => setPlan(event.target.value), placeholder: t('planPlaceholder') })),
@@ -214,7 +232,7 @@ window.__ModuleLoader__.load({
             h('span', { className: 'wb-badge wb-safe' }, t('safe'))),
           h('div', { className: 'wb-preview-grid' },
             h('div', { className: 'wb-preview-item' }, h('strong', null, t('previewGoal')), h('span', null, preview.goal || t('notSet'))),
-            h('div', { className: 'wb-preview-item' }, h('strong', null, t('previewModel')), h('span', null, preview.model)),
+            h('div', { className: 'wb-preview-item' }, h('strong', null, t('previewModel')), h('span', null, preview.model || t('modelPlaceholder'))),
             h('div', { className: 'wb-preview-item' }, h('strong', null, t('previewPlan')), h('span', null, preview.plan || t('emptyPlan'))),
             h('div', { className: 'wb-preview-item' }, h('strong', null, t('previewInstruction')), h('span', null, preview.instruction || t('noInstruction'))))),
         memoryOpen && h('div', { className: 'wb-memory-preview' },

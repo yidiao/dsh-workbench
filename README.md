@@ -5,7 +5,8 @@ A small Cordis bundle for DeepSeek Harness that adds a **Workbench command cente
 ## Features
 
 - Adds a `Workbench` main panel and sidebar entry.
-- Provides a command-center draft form for goal, plan, instruction, and model label; submit only builds a local preview.
+- Provides a command-center draft form for goal, plan, instruction, and model; submit only builds a local preview.
+- Lists the profile's real model routes in the selector via the read-only `llm` service catalog (`/dsh-workbench/api/models`), pre-selecting the current default model without calling it.
 - Reads `_workbench/state.json`, `_workbench/state.md`, and `_workbench/decisions.md`.
 - Reads optional `_workbench/ledger.json` and merges it with `relay/ledger.csv` when available.
 - Reads relay cards matching `relay/cards/T-<number>.md` as task summaries.
@@ -43,7 +44,7 @@ When no data is found, the panel remains available and presents empty states. Th
 
 ## Security and privacy
 
-The panel and memory-preview APIs are read-only GET endpoints. They reject non-loopback hosts and apply `connection.requestRejection` before returning workspace data. Memory sources are capped at 256 KiB per file and 12,000 characters per source; configured paths are constrained to the workbench root, including existing symlink targets, and responses expose relative source names rather than absolute paths. Workspace files and relay data are not included in this repository. Do not commit private project files, credentials, or generated ledgers.
+The panel and read-only catalog APIs are GET endpoints. They reject non-loopback hosts and apply `connection.requestRejection` before returning workspace data. The model catalog only reads the Host `llm` service (`listProviders`/`listModels`) and the current default selection; it never calls a model, selects a model, or changes provider configuration. Memory sources are capped at 256 KiB per file and 12,000 characters per source; configured paths are constrained to the workbench root, including existing symlink targets, and responses expose relative source names rather than absolute paths. Workspace files and relay data are not included in this repository. Do not commit private project files, credentials, or generated ledgers.
 
 ## Development checks
 

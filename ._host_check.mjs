@@ -21,10 +21,20 @@ process.env.DSH_WORKBENCH_DIR = tempWorkspace
 
 const registered = []
 let requestRejection = null
+let streamCalls = 0
+const mockLlm = {
+  listProviders: () => ['deepseek-official', 'gongyizhan'],
+  listModels: (provider) => provider === 'gongyizhan'
+    ? [{ id: 'kimi-k3-1', name: 'Kimi-K3-1' }, { id: 'hy3', name: 'hy3' }]
+    : [{ id: 'deepseek-flash', name: 'DeepSeek Flash' }],
+  stream: () => { streamCalls++; return null },
+}
+const mockDefaultModel = { currentSelection: () => ({ provider: 'deepseek-official', model: 'deepseek-flash' }) }
 const ctx = {
   webServer: { register: (r) => registered.push({ regType: 'web', ...r }) },
   tools: { register: (t) => registered.push({ regType: 'tool', ...t }) },
   connection: { requestRejection: () => requestRejection }, // null = trusted
+  get: (name) => name === 'llm' ? mockLlm : name === 'agentDefaultModel' ? mockDefaultModel : undefined,
 }
 
 const mod = await import(indexUrl)
@@ -33,18 +43,20 @@ await mod.apply(ctx)
 const route = registered.find(r => r.regType === 'web' && r.path?.includes('api/state'))
 const previewRoute = registered.find(r => r.regType === 'web' && r.path === '/dsh-workbench/api/preview')
 const previewVersionRoute = registered.find(r => r.regType === 'web' && r.path === '/dsh-workbench/api/preview-v1')
+const modelsRoute = registered.find(r => r.regType === 'web' && r.path === '/dsh-workbench/api/models')
 const toolNames = registered.filter(r => r.regType === 'tool').map(r => r.name)
 
 console.log('registered count:', registered.length)
 console.log('route path:', route?.path)
 console.log('preview paths:', previewRoute?.path, previewVersionRoute?.path)
+console.log('models path:', modelsRoute?.path)
 console.log('tool names:', toolNames)
 
 const ok =
   route && route.path === '/dsh-workbench/api/state-v2' &&
-  previewRoute && previewVersionRoute &&
-  ['wb_get', 'wb_set', 'wb_close'].every(n => toolNames.includes(n)) &&
-  toolNames.length === 3
+  previewRoute && previewVersionRoute && modelsRoute &&
+  ['wb_get', 'wb_set', 'wb_close', 'wb_models'].every(n => toolNames.includes(n)) &&
+  toolNames.length === 4
 if (!ok) { console.error('FAIL: registration mismatch'); process.exit(1) }
 
 // Every Host tool must expose a JSON Schema of type "object". Providers reject
@@ -124,6 +136,36 @@ if (blockedResponse.statusCode !== 405) { console.error('FAIL: preview accepted 
 console.log('preview.mode:', preview.mode)
 console.log('preview.execution:', preview.execution.status)
 console.log('preview.memory.fingerprint:', preview.memory.fingerprint)
+
+// Model catalog: read-only, reflects the llm service, and never issues a model
+// request (streamCalls must stay 0).
+const modelsResponse = { statusCode: 0, headers: {}, setHeader(k, v) { this.headers[k] = v }, end(body) { this.body = body } }
+await modelsRoute.handler({ method: 'GET', headers: { host: '127.0.0.1:55293' }, url: modelsRoute.path }, modelsResponse)
+if (modelsResponse.statusCode !== 200) { console.error('FAIL: models status', modelsResponse.statusCode); process.exit(1) }
+const models = JSON.parse(modelsResponse.body)
+if (models.ok !== true || models.available !== true) { console.error('FAIL: models payload', models); process.exit(1) }
+const gongyizhan = models.groups.find(group => group.id === 'gongyizhan')
+if (!gongyizhan || !gongyizhan.models.some(model => model.id === 'kimi-k3-1')) {
+  console.error('FAIL: configured model routes not exposed', models.groups)
+  process.exit(1)
+}
+if (models.current?.provider !== 'deepseek-official' || models.current?.model !== 'deepseek-flash') {
+  console.error('FAIL: default model selection not exposed', models.current)
+  process.exit(1)
+}
+if (streamCalls !== 0) { console.error('FAIL: model catalog invoked the model stream'); process.exit(1) }
+const blockedModels = { statusCode: 0, headers: {}, setHeader(k, v) { this.headers[k] = v }, end(body) { this.body = body } }
+await modelsRoute.handler({ method: 'POST', headers: { host: '127.0.0.1:55293' }, url: modelsRoute.path }, blockedModels)
+if (blockedModels.statusCode !== 405) { console.error('FAIL: models accepted non-GET', blockedModels.statusCode); process.exit(1) }
+console.log('models.groups:', models.groups.map(group => group.id + '(' + group.models.length + ')').join(', '))
+console.log('models.current:', models.current.provider + '/' + models.current.model)
+
+const modelsTool = registered.find(r => r.regType === 'tool' && r.name === 'wb_models')
+const toolResult = await modelsTool.execute({})
+if (!toolResult?.text?.includes('gongyizhan/kimi-k3-1')) {
+  console.error('FAIL: wb_models tool output', toolResult)
+  process.exit(1)
+}
 rmSync(tempRoot, { recursive: true, force: true })
 delete process.env.DSH_WORKBENCH_DIR
 console.log('\nHOST HARNESS PASS')

@@ -1,4 +1,4 @@
-// dsh-workbench v0.2.0 —— 工作区指挥台 + 只读预览数据端点
+// dsh-workbench v0.2.1 —— 工作区指挥台 + 只读预览数据端点
 //
 // v0.2 的 UI 读取真实工作台文件并生成本地任务草稿；不写母站，不启动模型，不改变会话。
 // 三个 Host 工具仍保留：wb_get / wb_set / wb_close。
@@ -70,6 +70,7 @@ const API_PATH = '/dsh-workbench/api/state-v2'
 // Preview is intentionally a read-only endpoint. There is no POST/model route.
 const PREVIEW_API_PATH = '/dsh-workbench/api/preview'
 const PREVIEW_API_VERSION_PATH = '/dsh-workbench/api/preview-v1'
+const MODELS_API_PATH = '/dsh-workbench/api/models'
 const MAX_SOURCE_BYTES = 256 * 1024
 const MAX_SOURCE_CHARS = 12000
 const MAX_SOURCES_PER_ROLE = 32
@@ -296,6 +297,81 @@ function memoryPreviewPayload() {
   }
 }
 
+function serviceGet(ctx, name) {
+  try {
+    if (typeof ctx?.get === 'function') return ctx.get(name)
+    return ctx?.[name]
+  } catch {
+    return undefined
+  }
+}
+
+function normalizeModelEntry(value) {
+  if (typeof value === 'string') return { id: value, name: value }
+  if (!value || typeof value !== 'object') return null
+  const id = firstValue(value.id, value.model, value.slug, value.name)
+  if (!id) return null
+  return { id: String(id), name: String(firstValue(value.name, value.displayName, value.id, value.model) || id) }
+}
+
+function normalizeProviderEntry(value) {
+  if (typeof value === 'string') return { id: value, name: value, models: [] }
+  if (!value || typeof value !== 'object') return null
+  const id = firstValue(value.id, value.provider, value.name)
+  if (!id) return null
+  return {
+    id: String(id),
+    name: String(firstValue(value.name, value.displayName, value.id, value.provider) || id),
+    models: [],
+  }
+}
+
+// Read-only model catalog for the command-center selector. It uses the Host
+// `llm` service when the profile provides one and degrades to an empty catalog
+// (never an error page) when it does not. No model request is made here.
+async function modelCatalogPayload(ctx) {
+  const llm = serviceGet(ctx, 'llm')
+  if (!llm || typeof llm.listProviders !== 'function') {
+    return { ok: true, available: false, groups: [], reason: 'llm service not available in this profile' }
+  }
+  let rawProviders = []
+  try { rawProviders = await llm.listProviders() } catch { rawProviders = [] }
+  if (!Array.isArray(rawProviders)) rawProviders = []
+  const groups = []
+  for (const rawProvider of rawProviders) {
+    const provider = normalizeProviderEntry(rawProvider)
+    if (!provider) continue
+    let rawModels = []
+    try {
+      rawModels = await llm.listModels(provider.id)
+    } catch {
+      rawModels = []
+    }
+    if (!Array.isArray(rawModels)) {
+      if (rawModels && typeof rawModels === 'object') rawModels = Object.values(rawModels)
+      else rawModels = []
+    }
+    provider.models = rawModels.map(normalizeModelEntry).filter(Boolean)
+    groups.push(provider)
+  }
+  let current = null
+  const defaults = serviceGet(ctx, 'agentDefaultModel')
+  if (defaults && typeof defaults.currentSelection === 'function') {
+    try {
+      const selection = await defaults.currentSelection()
+      if (selection && typeof selection === 'object') {
+        current = {
+          provider: selection.provider ? String(selection.provider) : '',
+          model: selection.model ? String(selection.model) : '',
+        }
+      }
+    } catch {
+      current = null
+    }
+  }
+  return { ok: true, available: true, groups, current, fetchedAt: new Date().toISOString() }
+}
+
 function parseCsvLine(line) {
   const fields = []
   let value = ''
@@ -438,6 +514,50 @@ export async function apply(ctx) {
       },
     }))
   }
+
+  // Model catalog is read-only: it exposes whatever the profile's llm service
+  // reports so the selector can list the user's real routes, and it never
+  // selects or calls a model.
+  disposers.push(ctx.webServer.register({
+    kind: 'exact',
+    path: MODELS_API_PATH,
+    handler: async (req, res) => {
+      if (!isLoopbackReq(req)) {
+        sendJson(res, 403, { ok: false, error: '只接受本机回环访问' })
+        return
+      }
+      const rejection = ctx.connection.requestRejection(req)
+      if (rejection) {
+        sendJson(res, rejection, { ok: false, error: '未通过 Harness 浏览器信任校验' })
+        return
+      }
+      if (req.method !== 'GET') {
+        sendJson(res, 405, { ok: false, error: '只支持 GET' })
+        return
+      }
+      sendJson(res, 200, await modelCatalogPayload(ctx))
+    },
+  }))
+
+  disposers.push(ctx.tools.register({
+    name: 'wb_models',
+    description: '列出当前 profile 可用的模型路由（只读，不调用模型）。',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {},
+    },
+    output: textOutput,
+    async execute() {
+      const catalog = await modelCatalogPayload(ctx)
+      if (!catalog.available) return { text: `模型目录不可用：${catalog.reason}` }
+      const lines = catalog.groups.map(group => {
+        const models = group.models.map(model => `${group.id}/${model.id}`).join(', ') || '(无模型)'
+        return `${group.name || group.id}: ${models}`
+      })
+      return { text: lines.length ? lines.join('\n') : '当前没有可用模型路由。' }
+    },
+  }))
 
   disposers.push(ctx.tools.register({
     name: 'wb_get',
