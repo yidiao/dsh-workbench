@@ -19,7 +19,13 @@ A small Cordis bundle for DeepSeek Harness that adds a read-only **Workbench** p
 
 ## Install
 
-Install this package as a local directory bundle through Harness Plugin Manager, or install the published GitHub package through a supported bundle spec. This repository root is the package directory. Do not manually edit a Harness profile's package manifest or Cordis patch.
+Clone the public repository, then install its root directory as a local bundle through Harness Plugin Manager:
+
+```sh
+git clone https://github.com/yidiao/dsh-workbench.git
+```
+
+Select the cloned `dsh-workbench/` directory in the Plugin Manager's local bundle install flow. Do not manually edit a Harness profile's package manifest or Cordis patch. The repository root is the package directory; no build step is required.
 
 After installation, refresh the Harness Web UI and select **Workbench** in the sidebar.
 
