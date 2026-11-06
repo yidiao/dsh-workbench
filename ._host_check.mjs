@@ -6,6 +6,7 @@
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, realpathSync, rmSync, existsSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 
 const here = new URL('.', import.meta.url)
 const indexUrl = new URL('./index.js', here)
@@ -257,6 +258,44 @@ if ((agentsAgain.match(/dsh-workbench:generated:start/g) || []).length !== 1 || 
   console.error('FAIL: generated block duplicated or manual text lost', agentsAgain)
   process.exit(1)
 }
+// v1.0 Phase A exit, stated explicitly: the old preview endpoint and the
+// primary/secondary fields are gone (not merely unused), and two renders of the
+// same record produce byte-identical injected text, which is what keeps the
+// session prefix cacheable.
+const blockOf = text => {
+  const start = text.indexOf('<!-- dsh-workbench:generated:start -->')
+  const end = text.indexOf('<!-- dsh-workbench:generated:end -->', start)
+  return start >= 0 && end > start ? text.slice(start, end) : ''
+}
+if (registered.some(item => item.regType === 'web' && /preview/i.test(String(item.path)))) {
+  console.error('FAIL: a preview route is still registered')
+  process.exit(1)
+}
+const indexSource = readFileSync(new URL('./index.js', here), 'utf8')
+const clientSource = readFileSync(new URL('./client.js', here), 'utf8')
+for (const [label, source] of [['index.js', indexSource], ['client.js', clientSource]]) {
+  if (source.includes('/api/preview')) {
+    console.error('FAIL: ' + label + ' still calls the removed preview endpoint')
+    process.exit(1)
+  }
+}
+const stateJson = JSON.stringify(payload)
+if (/"primary"\s*:/.test(stateJson) || /"secondary"\s*:/.test(stateJson)) {
+  console.error('FAIL: state payload still carries primary/secondary')
+  process.exit(1)
+}
+if (/"primary"\s*:/.test(agentsAgain) || /"secondary"\s*:/.test(agentsAgain)) {
+  console.error('FAIL: injected AGENTS.md still carries primary/secondary')
+  process.exit(1)
+}
+const blockHash = createHash('sha256').update(blockOf(agentsText)).digest('hex')
+const blockHashAgain = createHash('sha256').update(blockOf(agentsAgain)).digest('hex')
+if (blockHash !== blockHashAgain) {
+  console.error('FAIL: two renders of the same record differ', blockHash, blockHashAgain)
+  process.exit(1)
+}
+console.log('phase A exit: no preview route, no primary/secondary in payload or injection, block sha256 stable across renders:', blockHash.slice(0, 12))
+
 // Loopback only.
 const remoteMemory = { statusCode: 0, headers: {}, setHeader(k, v) { this.headers[k] = v }, end(body) { this.body = body } }
 await memoryRoute.handler({ method: 'GET', headers: { host: '10.0.0.7:55293' }, url: memoryRoute.path }, remoteMemory)
