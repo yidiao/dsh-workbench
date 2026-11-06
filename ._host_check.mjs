@@ -1103,6 +1103,41 @@ if (emptyFlow.nodes.length !== 0 || emptyFlow.edges.length !== 0) fail('a fresh 
 if (!emptyFlow.executors.some(item => item.kind === 'text' && item.available === true)) fail('text executor not registered')
 if (!emptyFlow.executors.some(item => item.kind === 'image' && item.available === false)) fail('image executor should be unregistered (gray)')
 
+// First run: the example is the only authoring path a brand-new canvas has, so
+// it must be a graph that can actually go green - not a picture of one.
+const demoRoute = registered.find(r => r.regType === 'web' && r.path === '/dsh-workbench/api/flow/demo')
+if (!demoRoute) fail('demo route missing')
+const demoSeedRes = response()
+await demoRoute.handler(postReq(demoRoute.path, { requestId: 'harness-demo-1' }), demoSeedRes)
+if (demoSeedRes.statusCode !== 200) fail('demo seed status ' + demoSeedRes.statusCode + ' ' + demoSeedRes.body)
+const demoSeeded = JSON.parse(demoSeedRes.body)
+if (demoSeeded.seeded !== true || demoSeeded.flow.nodes.length !== 2 || demoSeeded.flow.edges.length !== 1) {
+  fail('demo seed shape ' + demoSeedRes.body)
+}
+if (demoSeeded.flow.validation.ok !== true) fail('demo graph must validate: ' + demoSeedRes.body)
+const demoRunRes = response()
+await runRoute.handler(postReq(runRoute.path, { confirm: true }), demoRunRes)
+if (demoRunRes.statusCode !== 200) fail('demo run status ' + demoRunRes.statusCode + ' ' + demoRunRes.body)
+const demoRun = JSON.parse(demoRunRes.body)
+const demoGreens = demoRun.results.filter(item => item.status === 'green')
+if (demoGreens.length !== 2) fail('the example must go green on the first run: ' + JSON.stringify(demoRun.results))
+for (const result of demoGreens) {
+  if (!result.artifact || !existsSync(result.artifact)) fail('demo artifact missing: ' + JSON.stringify(result))
+}
+const demoArtifact = readFileSync(demoGreens.find(item => item.nodeId === 'n_demo_report').artifact, 'utf8')
+if (!demoArtifact.includes('本周完成三件事')) fail('the example sink did not consume the source: ' + JSON.stringify(demoArtifact.slice(0, 120)))
+// The example is refused on a canvas that already has nodes instead of replacing work.
+const demoAgainRes = response()
+await demoRoute.handler(postReq(demoRoute.path, {}), demoAgainRes)
+if (demoAgainRes.statusCode !== 409 || JSON.parse(demoAgainRes.body).code !== 'canvas-not-empty') {
+  fail('demo must refuse a non-empty canvas: ' + demoAgainRes.statusCode + ' ' + demoAgainRes.body)
+}
+const demoGetRes = response()
+await demoRoute.handler(getReq(demoRoute.path), demoGetRes)
+if (demoGetRes.statusCode !== 405) fail('demo accepted GET')
+// Clear the example so the rest of the suite starts from a blank canvas again.
+writeFileSync(join(tempWorkspace, 'flow.json'), JSON.stringify({ version: 1, nodes: [], edges: [], state: {} }), 'utf8')
+
 // node A: the material, produced locally and verified by matching text
 const makeNode = async payload => {
   const res = response()
@@ -1254,6 +1289,7 @@ for (const action of ['flow.node', 'flow.node.update', 'flow.edge', 'flow.run', 
   if (!flowActions.includes(action)) fail('audit missing ' + action)
 }
 console.log('graph: typed ports + refused edges (type/port/self/node/cycle) | a two-node text flow writes real artifacts | verifier red on a missing word, red after the artifact is deleted | unregistered executor stays gray and writes nothing')
+console.log('graph first run: the example seeds two nodes + one typed edge, runs green on both, refuses to overwrite a non-empty canvas')
 
 // --- v1.0 flywheel: three colours, promotion/demotion, cost, ranking --------
 const flyRoute = registered.find(r => r.regType === 'web' && r.path === '/dsh-workbench/api/flywheel')

@@ -73,6 +73,7 @@ const reports = {
 }
 
 let flowBroken = false
+let canvasEmpty = false
 function graphPayload() {
   const nodes = [
     {
@@ -91,8 +92,8 @@ function graphPayload() {
   return {
     ok: true,
     version: 1,
-    nodes,
-    edges: [{ id: 'e_1', from: { node: 'n_src', port: 'text' }, to: { node: 'n_cover', port: 'prompt' }, valid: true }],
+    nodes: canvasEmpty ? [] : nodes,
+    edges: canvasEmpty ? [] : [{ id: 'e_1', from: { node: 'n_src', port: 'text' }, to: { node: 'n_cover', port: 'prompt' }, valid: true }],
     validation: {
       ok: !flowBroken,
       issues: flowBroken ? [{ code: 'type-mismatch', edgeId: 'e_2', message: '资料.text 产出 file，而 文本.input 需要 text' }] : [],
@@ -260,6 +261,25 @@ globalThis.fetch = async (raw, options) => {
       flow: payload,
     })
   }
+  if (path === '/dsh-workbench/api/flow/demo') {
+    canvasEmpty = false
+    return ok({ ok: true, seeded: true, flow: graphPayload() })
+  }
+  if (path === '/dsh-workbench/api/flow/node') {
+    const payload = graphPayload()
+    payload.nodes.push({
+      id: 'n_added', kind: 'step', title: String(body?.title || ''),
+      inputs: [], outputs: [{ name: 'out', type: 'text' }],
+      executor: { kind: 'text', params: { content: '' } }, verifier: { kind: 'file-exists', path: '' },
+      runtime: { executor: 'text', executorLabel: '模板拼装（本地，真跑）', available: true, status: 'idle', artifact: '', note: '', checkedAt: '' },
+      issues: [], blocked: false,
+    })
+    payload.edges.push({ id: 'e_2', from: { node: 'n_added', port: 'out' }, to: { node: 'n_src', port: 'in' }, valid: true })
+    return ok(payload)
+  }
+  if (path === '/dsh-workbench/api/flow/edge') return ok(graphPayload())
+  if (path === '/dsh-workbench/api/flow/node/delete') return ok(graphPayload())
+  if (path === '/dsh-workbench/api/flow/edge/delete') return ok(graphPayload())
   if (path === '/dsh-workbench/api/flow/verify') {
     return ok({ ok: true, results: [{ nodeId: 'n_src', status: 'green' }], flow: graphPayload() })
   }
@@ -393,9 +413,13 @@ if (!includesText(tree, '当前会话的最后一段回复。')) fail('live repl
 // the graph is painted from the Host's validation, colours included
 if (!findClass(tree, 'wb-flow')) fail('working moment did not paint the node graph', tree)
 if (!findText(tree, '资料') || !findText(tree, '封面图')) fail('graph nodes missing from the canvas', tree)
-const greenNode = findNode(tree, n => String(n.props?.className || '').includes('wb-flow-node') && n.props?.['data-status'] === 'green')
+if (!findClass(tree, 'wb-graph-stage')) fail('the canvas stage is not painted', tree)
+const drawnEdges = findAll(tree, n => String(n.props?.className || '').includes('wb-graph-line'))
+if (drawnEdges.length !== 1) fail('expected one drawn connection, got ' + drawnEdges.length, tree)
+if (!drawnEdges[0].props?.d || !String(drawnEdges[0].props.d).startsWith('M')) fail('the connection has no path', tree)
+const greenNode = findNode(tree, n => String(n.props?.className || '').includes('wb-graph-node') && n.props?.['data-status'] === 'green')
 if (!greenNode) fail('verified node is not painted green', tree)
-const grayNode = findNode(tree, n => String(n.props?.className || '').includes('wb-flow-node') && n.props?.['data-status'] === 'gray')
+const grayNode = findNode(tree, n => String(n.props?.className || '').includes('wb-graph-node') && n.props?.['data-status'] === 'gray')
 if (!grayNode) fail('a node without an executor must stay gray', tree)
 if (!includesText(grayNode, '没有 executor')) fail('gray node does not say why it cannot run', tree)
 const runGraphButton = findNode(tree, n => n.type === 'button' && findText(n.props?.children, 'flowRun'))
@@ -412,6 +436,56 @@ if (graphRunCall.body.confirm !== true) fail('the graph ran without explicit con
 if (!includesText(tree, 'flowRan')) fail('graph run result not reported', tree)
 if (findClass(tree, 'wb-sync')) fail('attach form leaked into the working moment', tree)
 if (findClass(tree, 'wb-close')) fail('close form leaked into the working moment', tree)
+// authoring: the canvas is not a museum — a node and a connection can be built here
+const titleField = findNode(tree, n => n.type === 'input' && n.props?.id === 'wb-node-title')
+if (!titleField) fail('no add-node title field', tree)
+titleField.props.onChange({ target: { value: '新加的一步' } })
+tree = renderPanel()
+const beforeAddNode = requests.length
+clickButton(tree, 'graphAddNode')
+tree = renderPanel()
+await new Promise(resolve => setTimeout(resolve, 25))
+tree = renderPanel()
+const nodePost = requests.slice(beforeAddNode).find(r => r.path === '/dsh-workbench/api/flow/node' && r.method === 'POST')
+if (!nodePost) fail('add node did not call the node route')
+if (nodePost.body.title !== '新加的一步') fail('node title not posted: ' + JSON.stringify(nodePost.body))
+if (!includesText(tree, 'graphAdded')) fail('node creation not reported', tree)
+const fromSelect = findNode(tree, n => n.type === 'select' && n.props?.id === 'wb-edge-from')
+const toSelect = findNode(tree, n => n.type === 'select' && n.props?.id === 'wb-edge-to')
+if (!fromSelect || !toSelect) fail('no connect form on a canvas with two or more nodes', tree)
+fromSelect.props.onChange({ target: { value: 'n_src' } })
+tree = renderPanel()
+findNode(tree, n => n.type === 'select' && n.props?.id === 'wb-edge-to').props.onChange({ target: { value: 'n_cover' } })
+tree = renderPanel()
+const beforeEdge = requests.length
+clickButton(tree, 'graphAddEdge')
+tree = renderPanel()
+await new Promise(resolve => setTimeout(resolve, 25))
+tree = renderPanel()
+const edgePost = requests.slice(beforeEdge).find(r => r.path === '/dsh-workbench/api/flow/edge' && r.method === 'POST')
+if (!edgePost) fail('connect did not call the edge route')
+if (edgePost.body.from?.node !== 'n_src' || edgePost.body.to?.node !== 'n_cover') fail('edge endpoints not posted: ' + JSON.stringify(edgePost.body))
+if (!includesText(tree, 'graphEdgeAdded')) fail('edge creation not reported', tree)
+console.log('canvas: stage + drawn connection | add-node and connect call their routes and repaint')
+
+// first run on an empty canvas: only the example can make it green, so it must be offered
+canvasEmpty = true
+tree = renderPanel()
+await new Promise(resolve => setTimeout(resolve, 25))
+tree = renderPanel()
+if (!includesText(tree, 'graphEmpty')) fail('empty canvas does not offer the example', tree)
+const demoButton = findNode(tree, n => n.type === 'button' && findText(n.props?.children, 'graphDemo'))
+if (!demoButton) fail('no load-example button on an empty canvas', tree)
+if (demoButton.props.disabled) fail('load-example must be enabled on an empty canvas')
+const beforeDemo = requests.length
+demoButton.props.onClick()
+tree = renderPanel()
+await new Promise(resolve => setTimeout(resolve, 25))
+tree = renderPanel()
+if (!requests.slice(beforeDemo).some(r => r.path === '/dsh-workbench/api/flow/demo')) fail('load-example did not call the demo route')
+if (!includesText(tree, 'graphDemoDone')) fail('example load not reported', tree)
+if (!findText(tree, '资料') || !findText(tree, '封面图')) fail('the example did not repaint the canvas', tree)
+canvasEmpty = false
 console.log('moment: live run → working, orphan flagged, live session painted, other moments absent')
 
 // --- 3. working → attach: memory is the first thing on screen --------------
@@ -424,6 +498,17 @@ if (!includesText(tree, 'D:/AI Pj/_workbench')) fail('memory project root missin
 if (!findClass(tree, 'wb-sync')) fail('attach moment did not paint the task box', tree)
 if (findClass(tree, 'wb-run')) fail('run card leaked into the attach moment', tree)
 if (findClass(tree, 'wb-close')) fail('close form leaked into the attach moment', tree)
+// the canvas must be reachable from where a fresh session actually opens
+const door = findNode(tree, n => n.type === 'button' && findText(n.props?.children, 'graphDoor'))
+if (!findClass(tree, 'wb-canvas-door') || !door) fail('attach moment has no way into the canvas', tree)
+door.props.onClick()
+tree = renderPanel()
+if (activeMoment(tree) !== 'work') fail('the canvas door did not switch to the working moment', tree)
+if (!findClass(tree, 'wb-graph-stage')) fail('the canvas door opened a moment without the canvas', tree)
+// go back: the attach assertions that follow still need the attach moment
+clickMoment(tree, 'attach')
+tree = renderPanel()
+
 
 // typing asks the Host what channel this work belongs to
 setTextarea(tree, 'wb-sync-text', '把那段话改短一点')
@@ -597,3 +682,10 @@ console.log('moment: gap → close out, closed → attach; no session disables s
 console.log('graph: a refused graph cannot be run and shows the edge reason')
 
 console.log('\nCLIENT HARNESS PASS')
+
+// The panel keeps a poll interval alive for the moment it shows, so a test
+// process would sit there after every assertion has passed. Leaving explicitly
+// keeps the exit code honest: only the assertions above can fail this run.
+const stragglers = process._getActiveHandles().filter(handle => handle.constructor?.name === 'Timeout').length
+if (stragglers > 0) console.log('note: ' + stragglers + ' panel poll timer(s) still armed; the test exits instead of waiting')
+process.exit(0)

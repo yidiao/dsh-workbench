@@ -45,6 +45,17 @@ window.__ModuleLoader__.load({
       flowNoExecutor: 'unregistered executor', flowBroken: 'Graph refused:',
       flowRun: 'Run graph', flowVerify: 'Re-check artifacts', flowBusy: 'Running…',
       flowRan: 'Ran. Verified:', flowRanVerify: 'Re-checked. Verified:',
+      graphTitle: 'Canvas', graphHint: 'Read-only layout: connections are drawn from the Host\'s own graph. Build it with the forms below, then run it.',
+      graphEmpty: 'Nothing on the canvas yet. Press "Load example" to get a two-node graph that really goes green, or add a node below.',
+      graphAddNode: 'Add node', graphNodeTitle: 'Title', graphExecutor: 'Executor', graphParams: 'Content / template',
+      graphVerifier: 'Verifier', graphVerifierPath: 'Artifact path (empty = this node\'s own file)', graphVerifierContains: 'Must contain',
+      graphAddEdge: 'Connect', graphEdgeFrom: 'From', graphEdgeTo: 'To', graphDemo: 'Load example',
+      graphDemoBusy: 'Loading…', graphDemoDone: 'Example loaded: press "Run graph" — both nodes should turn green.',
+      graphAdded: 'Node added.', graphEdgeAdded: 'Edge added.', graphDeleted: 'Removed.',
+      graphSaved: 'Saved.', graphEdges: 'Connections', graphNoEdges: 'No connections yet.',
+      graphParamsPlaceholder: 'Literal text, or a template using {{input}}', graphRunFirst: 'Run graph to produce artifacts.',
+      graphStep: 'step',
+      graphDoor: 'Open the canvas', graphDoorHint: 'Assembling a next step? The canvas is read-only about relations and honest about what ran.',
       flyTitle: 'Continue from here', flyReward: 'promoted',
       flyNone: 'Nothing is recommended yet — a card is recommended after 2 verified outcomes and no failure.',
       flyCost: 'cost per green', flyCostUnknown: 'cost unknown', flyResume: 'Continue',
@@ -77,6 +88,17 @@ window.__ModuleLoader__.load({
       flowGray: '没有 executor', flowGreen: '已验证', flowRed: '失败', flowIdle: '还没跑',
       flowNoExecutor: '未注册的 executor', flowBroken: '画布被拒：',
       flowRun: '跑一遍画布', flowVerify: '重验产物', flowBusy: '正在跑…',
+      graphTitle: '画布', graphHint: '只读布局：连线是宿主按真实节点图画的；用下面的表单建图，再点「跑一遍画布」。',
+      graphEmpty: '画布上什么都没有。点「载入示例」拿一张能真变绿的两人图，或者在下面加一个节点。',
+      graphAddNode: '加节点', graphNodeTitle: '标题', graphExecutor: '执行器', graphParams: '内容 / 模板',
+      graphVerifier: '校验器', graphVerifierPath: '产物路径（空 = 这个节点自己的文件）', graphVerifierContains: '必须包含',
+      graphAddEdge: '连线', graphEdgeFrom: '从', graphEdgeTo: '到', graphDemo: '载入示例',
+      graphDemoBusy: '载入中…', graphDemoDone: '示例已就位：点「跑一遍画布」，两个节点应该都变绿。',
+      graphAdded: '节点已加。', graphEdgeAdded: '连线已加。', graphDeleted: '已删除。',
+      graphSaved: '已保存。', graphEdges: '连线', graphNoEdges: '还没有连线。',
+      graphParamsPlaceholder: '直接写文字，或用 {{input}} 的模板', graphRunFirst: '点「跑一遍画布」才会产出文件。',
+      graphStep: '步骤',
+      graphDoor: '打开画布', graphDoorHint: '下一步要装配？画布只读地画关系，也老实说哪些真跑过。',
       flowRan: '跑完。已验证：', flowRanVerify: '重验完。已验证：',
       flyTitle: '从这里继续', flyReward: '已晋升',
       flyNone: '还没有可推荐的——攒到 2 次验证过、且没有红，才会进推荐。',
@@ -288,6 +310,26 @@ window.__ModuleLoader__.load({
       .wb-run-row-goal{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
       .wb-run-row-meta{flex:0 0 auto;color:var(--dsw-alias-label-secondary);font-size:10px}
       .wb-run-row-tpl{flex:0 0 auto;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;border:1px solid color-mix(in srgb,var(--dsw-alias-brand-primary) 40%,var(--dsw-alias-border-l1));border-radius:999px;padding:1px 7px;color:var(--dsw-alias-brand-primary);font-size:10px;font-weight:650}
+      .wb-graph-stage{position:relative;margin:10px 0 12px;overflow:auto;border:1px solid var(--dsw-alias-border-l1);border-radius:12px;background:var(--dsw-alias-bg-layer-2);padding:2px}
+      .wb-graph-svg{position:absolute;inset:0;pointer-events:none;overflow:visible}
+      .wb-graph-line{fill:none;stroke:var(--dsw-alias-border-l3);stroke-width:1.6px;stroke-dasharray:none}
+      .wb-graph-line[data-valid=no]{stroke:var(--dsw-alias-state-error-primary);stroke-dasharray:5 4}
+      .wb-graph-arrow{fill:var(--dsw-alias-border-l3)}
+      .wb-graph-node{position:absolute;display:flex;flex-direction:column;gap:2px;box-sizing:border-box;padding:8px 10px;overflow:hidden;background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l2);border-left:3px solid var(--dsw-alias-border-l3);border-radius:10px}
+      .wb-graph-node[data-status=green]{border-left-color:var(--dsw-alias-state-success-primary)}
+      .wb-graph-node[data-status=red]{border-left-color:var(--dsw-alias-state-error-primary)}
+      .wb-graph-node[data-status=gray]{border-style:dashed;opacity:.72}
+      .wb-graph-node[data-status=running]{border-left-color:var(--dsw-alias-brand-primary)}
+      .wb-graph-remove{position:absolute;top:4px;right:4px;width:18px;height:18px;line-height:1;padding:0;border:none;border-radius:5px;background:transparent;color:var(--dsw-alias-label-tertiary);cursor:pointer;font-size:13px}
+      .wb-graph-remove:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}
+      .wb-graph-form{display:flex;flex-direction:column;gap:8px;padding:10px 0 4px}
+      .wb-graph-edge-form{flex-direction:row;flex-wrap:wrap;align-items:flex-end;gap:10px}
+      .wb-graph-edge-form .wb-field{flex:1 1 160px}
+      .wb-graph-edges{display:flex;flex-direction:column;gap:4px;padding:6px 0}
+      .wb-graph-edge-row{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:11px;color:var(--dsw-alias-label-secondary);border-bottom:1px solid var(--dsw-alias-border-l1);padding:3px 0}
+      .wb-graph-edge-row[data-valid=no]{color:var(--dsw-alias-state-error-primary)}
+      .wb-graph-edge-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+      .wb-button-quiet{background:transparent;border:none;color:var(--dsw-alias-label-tertiary);padding:0 6px;min-width:0}
       .wb-canvas-row{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,0.9fr) minmax(0,1.2fr);gap:10px;align-items:start;padding:12px 0;border-top:1px solid var(--dsw-alias-border-l1)}
       .wb-canvas-row:first-of-type{border-top:none}
       .wb-canvas-col{display:flex;flex-direction:column;gap:6px;min-width:0}
@@ -512,6 +554,12 @@ const [momentOverride, setMomentOverride] = React.useState('')
       const [flyNotice, setFlyNotice] = React.useState('')
       const [flowBusy, setFlowBusy] = React.useState(false)
       const [flowNotice, setFlowNotice] = React.useState('')
+      // v0.13: the canvas needs a first-run path and an authoring path, or it is
+      // a read-only museum. These drafts are the forms that build the graph.
+      const [nodeDraft, setNodeDraft] = React.useState({ title: '', executor: 'text', content: '', template: '', verifier: 'file-exists', path: '', contains: '' })
+      const [edgeDraft, setEdgeDraft] = React.useState({ from: '', to: '' })
+      const [graphBusy, setGraphBusy] = React.useState(false)
+      const [graphNotice, setGraphNotice] = React.useState('')
       const prefilled = React.useRef(false)
 
       const applyRuns = React.useCallback(items => {
@@ -749,6 +797,70 @@ const boundSessionId = String(sessionId || '').trim()
           const green = items.filter(item => item.status === 'green').length
           setFlowNotice(t('flowRanVerify') + ' ' + green + ' / ' + items.length)
         } catch (failure) { setFlowNotice(String(failure?.message || failure)) } finally { setFlowBusy(false) }
+      }
+
+      // --- canvas authoring: every button here calls one Host route and then
+      // repaints from the Host's own payload, so the picture cannot drift from
+      // the file. A failed call keeps the previous graph and says why.
+      async function canvasPost(path, body, doneKey) {
+        if (graphBusy) return false
+        setGraphBusy(true); setGraphNotice('')
+        try {
+          const result = await postJsonStatus(path, body)
+          if (result.payload?.flow) setFlow(result.payload.flow)
+          if (result.ok) setGraphNotice(t(doneKey))
+          else setGraphNotice(String(result.payload?.error || ('HTTP ' + result.status)))
+          return Boolean(result.ok)
+        } catch (failure) {
+          setGraphNotice(String(failure?.message || failure))
+          return false
+        } finally { setGraphBusy(false) }
+      }
+
+      async function seedGraphDemo() {
+        const ok = await canvasPost('/dsh-workbench/api/flow/demo', { requestId: 'demo-' + Date.now() }, 'graphDemoDone')
+        if (ok) setFlowNotice('')
+      }
+
+      async function addGraphNode() {
+        const title = nodeDraft.title.trim()
+        if (!title) { setGraphNotice(t('graphNodeTitle') + '?'); return }
+        const ok = await canvasPost('/dsh-workbench/api/flow/node', {
+          title,
+          kind: nodeDraft.executor === 'text' ? (nodeDraft.template.trim() ? 'sink' : 'step') : 'step',
+          inputs: nodeDraft.template.trim() ? [{ name: 'in', type: 'text' }] : [],
+          outputs: [{ name: 'out', type: 'text' }],
+          executor: { kind: nodeDraft.executor, params: nodeDraft.template.trim() ? { template: nodeDraft.template } : { content: nodeDraft.content } },
+          verifier: nodeDraft.verifier === 'file-contains'
+            ? { kind: 'file-contains', path: nodeDraft.path.trim(), contains: nodeDraft.contains }
+            : { kind: 'file-exists', path: nodeDraft.path.trim() },
+          requestId: 'node-' + Date.now(),
+        }, 'graphAdded')
+        if (ok) setNodeDraft({ title: '', executor: 'text', content: '', template: '', verifier: 'file-exists', path: '', contains: '' })
+      }
+
+      async function addGraphEdge() {
+        if (!edgeDraft.from || !edgeDraft.to || edgeDraft.from === edgeDraft.to) { setGraphNotice(t('graphEdgeFrom') + ' → ' + t('graphEdgeTo')); return }
+        const fromNode = (flow?.nodes || []).find(node => node.id === edgeDraft.from)
+        const toNode = (flow?.nodes || []).find(node => node.id === edgeDraft.to)
+        const outPort = fromNode?.outputs?.[0]?.name || 'out'
+        const inPort = toNode?.inputs?.[0]?.name || 'in'
+        const ok = await canvasPost('/dsh-workbench/api/flow/edge', {
+          from: { node: edgeDraft.from, port: outPort },
+          to: { node: edgeDraft.to, port: inPort },
+          requestId: 'edge-' + Date.now(),
+        }, 'graphEdgeAdded')
+        if (ok) setEdgeDraft({ from: '', to: '' })
+      }
+
+      async function removeGraphNode(id) {
+        const ok = await canvasPost('/dsh-workbench/api/flow/node/delete', { id, requestId: 'node-del-' + Date.now() }, 'graphDeleted')
+        if (ok) setGraphNotice(t('graphDeleted'))
+      }
+
+      async function removeGraphEdge(id) {
+        const ok = await canvasPost('/dsh-workbench/api/flow/edge/delete', { id, requestId: 'edge-del-' + Date.now() }, 'graphDeleted')
+        if (ok) setGraphNotice(t('graphDeleted'))
       }
 
       const latestRun = runs[0] || null
@@ -1415,30 +1527,202 @@ const momentButton = (id, label) => h('button', {
       // The graph is painted from the Host's own validation: a node with no
       // executor is gray even if someone typed a nice title, and a broken edge
       // is shown with the reason instead of being drawn as if it worked.
+      // A canvas a person cannot build is a museum. These three things were
+      // missing and are why it read as "what am I supposed to do here": a way to
+      // put the first nodes on it, a way to connect them, and a picture where
+      // the connections are actually drawn.
+      //
+      // Layout is computed, never measured: columns by longest-path depth, fixed
+      // card slots, edges as curves between slot borders. That keeps the drawing
+      // derived from the Host's validation instead of from DOM luck, and it means
+      // a broken edge is drawn broken rather than hidden.
+      const GRAPH_CARD_W = 196
+      const GRAPH_CARD_H = 98
+      const GRAPH_GAP_X = 62
+      const GRAPH_GAP_Y = 16
+      const GRAPH_PAD = 6
+      const graphLayout = (() => {
+        const members = flow?.nodes || []
+        const known = new Set(members.map(node => node.id))
+        const links = (flow?.edges || []).filter(edge => known.has(edge?.from?.node) && known.has(edge?.to?.node))
+        const depth = new Map(members.map(node => [node.id, 0]))
+        for (let pass = 0; pass < members.length; pass += 1) {
+          let moved = false
+          for (const edge of links) {
+            const want = Math.min(depth.get(edge.from.node) + 1, Math.max(0, members.length - 1))
+            if (want > depth.get(edge.to.node)) { depth.set(edge.to.node, want); moved = true }
+          }
+          if (!moved) break
+        }
+        const columns = new Map()
+        for (const node of members) {
+          const level = depth.get(node.id) || 0
+          if (!columns.has(level)) columns.set(level, [])
+          columns.get(level).push(node)
+        }
+        const levels = Math.max(1, ...[...columns.keys()].map(level => level + 1))
+        const rows = Math.max(1, ...[...columns.values()].map(list => list.length))
+        const width = GRAPH_PAD * 2 + levels * GRAPH_CARD_W + (levels - 1) * GRAPH_GAP_X
+        const height = GRAPH_PAD * 2 + rows * GRAPH_CARD_H + (rows - 1) * GRAPH_GAP_Y
+        const boxes = new Map()
+        for (const [level, list] of columns) {
+          list.forEach((node, index) => {
+            boxes.set(node.id, {
+              left: GRAPH_PAD + level * (GRAPH_CARD_W + GRAPH_GAP_X),
+              top: GRAPH_PAD + index * (GRAPH_CARD_H + GRAPH_GAP_Y),
+              width: GRAPH_CARD_W,
+              height: GRAPH_CARD_H,
+            })
+          })
+        }
+        return { width, height, boxes, links }
+      })()
+
+      const graphCurve = edge => {
+        const from = graphLayout.boxes.get(edge.from?.node)
+        const to = graphLayout.boxes.get(edge.to?.node)
+        if (!from || !to) return ''
+        const x1 = from.left + from.width
+        const y1 = from.top + from.height / 2
+        const x2 = to.left
+        const y2 = to.top + to.height / 2
+        const bend = Math.max(26, Math.abs(x2 - x1) / 2)
+        return 'M' + x1 + ',' + y1 + ' C' + (x1 + bend) + ',' + y1 + ' ' + (x2 - bend) + ',' + y2 + ' ' + x2 + ',' + y2
+      }
+
+      const graphSelect = (options, value, onChange, id) => h('select', {
+        id, value, onChange: event => onChange(event.target.value),
+      }, options.map(option => h('option', { key: option.value, value: option.value }, option.label)))
+
+      const executorOptions = (flow?.executors || [{ kind: 'text', label: 'text', available: true }])
+        .map(item => ({ value: item.kind, label: item.label + (item.available ? '' : ' · 未接') }))
+
+      const nodeForm = h('div', { className: 'wb-graph-form' },
+        h('div', { className: 'wb-field' },
+          h('label', { htmlFor: 'wb-node-title' }, t('graphNodeTitle')),
+          h('input', {
+            id: 'wb-node-title', value: nodeDraft.title, placeholder: t('graphStep'),
+            onChange: event => setNodeDraft({ ...nodeDraft, title: event.target.value }),
+          })),
+        h('div', { className: 'wb-field' },
+          h('label', { htmlFor: 'wb-node-executor' }, t('graphExecutor')),
+          graphSelect(executorOptions, nodeDraft.executor, value => setNodeDraft({ ...nodeDraft, executor: value }), 'wb-node-executor')),
+        h('div', { className: 'wb-field' },
+          h('label', { htmlFor: 'wb-node-params' }, t('graphParams')),
+          h('textarea', {
+            id: 'wb-node-params', value: nodeDraft.template || nodeDraft.content, placeholder: t('graphParamsPlaceholder'),
+            onChange: event => {
+              const value = event.target.value
+              const looksTemplate = value.includes('{{input}}')
+              setNodeDraft({ ...nodeDraft, template: looksTemplate ? value : '', content: looksTemplate ? '' : value })
+            },
+          })),
+        h('div', { className: 'wb-field' },
+          h('label', { htmlFor: 'wb-node-verifier' }, t('graphVerifier')),
+          graphSelect([
+            { value: 'file-exists', label: 'file-exists' },
+            { value: 'file-contains', label: 'file-contains' },
+          ], nodeDraft.verifier, value => setNodeDraft({ ...nodeDraft, verifier: value }), 'wb-node-verifier')),
+        nodeDraft.verifier === 'file-contains'
+          ? h('div', { className: 'wb-field' },
+            h('label', { htmlFor: 'wb-node-contains' }, t('graphVerifierContains')),
+            h('input', {
+              id: 'wb-node-contains', value: nodeDraft.contains,
+              onChange: event => setNodeDraft({ ...nodeDraft, contains: event.target.value }),
+            }))
+          : null,
+        h('div', { className: 'wb-field' },
+          h('label', { htmlFor: 'wb-node-path' }, t('graphVerifierPath')),
+          h('input', {
+            id: 'wb-node-path', value: nodeDraft.path,
+            onChange: event => setNodeDraft({ ...nodeDraft, path: event.target.value }),
+          })),
+        h('div', { className: 'wb-actions', style: { justifyContent: 'flex-end' } },
+          h('button', { className: 'wb-button', type: 'button', onClick: addGraphNode, disabled: graphBusy }, t('graphAddNode'))))
+
+      const nodeOptions = (flow?.nodes || []).map(node => ({ value: node.id, label: String(node.title || node.id) }))
+      const edgeForm = nodeOptions.length > 1
+        ? h('div', { className: 'wb-graph-form wb-graph-edge-form' },
+          h('div', { className: 'wb-field' },
+            h('label', { htmlFor: 'wb-edge-from' }, t('graphEdgeFrom')),
+            graphSelect([{ value: '', label: '—' }, ...nodeOptions], edgeDraft.from, value => setEdgeDraft({ ...edgeDraft, from: value }), 'wb-edge-from')),
+          h('div', { className: 'wb-field' },
+            h('label', { htmlFor: 'wb-edge-to' }, t('graphEdgeTo')),
+            graphSelect([{ value: '', label: '—' }, ...nodeOptions], edgeDraft.to, value => setEdgeDraft({ ...edgeDraft, to: value }), 'wb-edge-to')),
+          h('div', { className: 'wb-actions', style: { justifyContent: 'flex-end' } },
+            h('button', { className: 'wb-button', type: 'button', onClick: addGraphEdge, disabled: graphBusy || !edgeDraft.from || !edgeDraft.to }, t('graphAddEdge'))))
+        : null
+
+      const edgeList = (flow?.edges || []).length
+        ? h('div', { className: 'wb-graph-edges' },
+          (flow?.edges || []).map(edge => {
+            const fromNode = (flow?.nodes || []).find(node => node.id === edge.from?.node)
+            const toNode = (flow?.nodes || []).find(node => node.id === edge.to?.node)
+            return h('div', { key: edge.id, className: 'wb-graph-edge-row', 'data-valid': edge.valid === false ? 'no' : 'yes' },
+              h('span', { className: 'wb-graph-edge-label' }, String(fromNode?.title || edge.from?.node) + ' → ' + String(toNode?.title || edge.to?.node)),
+              h('button', {
+                className: 'wb-button wb-button-quiet', type: 'button', disabled: graphBusy,
+                onClick: () => removeGraphEdge(edge.id), title: t('graphDeleted'),
+              }, '×'))
+          }))
+        : h('div', { className: 'wb-note' }, t('graphNoEdges'))
+
+      const graphStage = (flow?.nodes || []).length
+        ? h('div', { className: 'wb-graph-stage', style: { width: graphLayout.width + 'px', height: graphLayout.height + 'px' } },
+          h('svg', {
+            className: 'wb-graph-svg', width: graphLayout.width, height: graphLayout.height,
+            viewBox: '0 0 ' + graphLayout.width + ' ' + graphLayout.height,
+            'aria-hidden': 'true',
+          },
+            h('defs', null, h('marker', {
+              id: 'wb-graph-arrow', viewBox: '0 0 8 8', refX: 7, refY: 4,
+              markerWidth: 6, markerHeight: 6, orient: 'auto-start-reverse',
+            }, h('path', { d: 'M0,0 L8,4 L0,8 z', className: 'wb-graph-arrow' }))),
+            graphLayout.links.map(edge => h('path', {
+              key: 'e-' + edge.id,
+              d: graphCurve(edge),
+              className: 'wb-graph-line',
+              'data-valid': edge.valid === false ? 'no' : 'yes',
+              markerEnd: 'url(#wb-graph-arrow)',
+            }))),
+          (flow?.nodes || []).map(node => {
+            const box = graphLayout.boxes.get(node.id)
+            if (!box) return null
+            return h('div', {
+              key: node.id,
+              className: 'wb-graph-node',
+              'data-status': node.runtime?.status || 'idle',
+              style: { left: box.left + 'px', top: box.top + 'px', width: box.width + 'px', height: box.height + 'px' },
+            },
+              h('div', { className: 'wb-flow-head' },
+                h('span', { className: 'wb-flow-title' }, String(node.title || node.id)),
+                flowChip(node.runtime?.status || 'idle')),
+              h('div', { className: 'wb-flow-meta' }, node.runtime?.executorLabel || t('flowNoExecutor')),
+              h('div', { className: 'wb-flow-ports' },
+                h('span', null, (node.inputs || []).map(port => port.type).join(' / ') || '—'),
+                h('span', null, '→'),
+                h('span', null, (node.outputs || []).map(port => port.type).join(' / ') || '—')),
+              node.runtime?.note ? h('div', { className: 'wb-note' }, node.runtime.note) : null,
+              (node.issues || []).length ? h('div', { className: 'wb-note wb-warn-note' }, node.issues.join(' · ')) : null,
+              h('button', {
+                className: 'wb-graph-remove', type: 'button', title: t('graphDeleted'),
+                disabled: graphBusy, onClick: () => removeGraphNode(node.id),
+              }, '×'))
+          }))
+        : h('div', { className: 'wb-empty' }, t('graphEmpty'))
+
       const flowView = h('section', { className: 'wb-card wb-flow' },
         h('div', { className: 'wb-card-head' },
-          h('h2', { style: { margin: 0 } }, t('flowTitle')),
+          h('h2', { style: { margin: 0 } }, t('graphTitle')),
           h('span', { className: 'wb-note' }, flow ? String(flow.nodes.length) + ' 节点 · ' + String(flow.edges.length) + ' 边' : '—')),
-        flow && flow.nodes.length
-          ? h('div', { className: 'wb-flow-nodes' }, flow.nodes.map(node => h('div', {
-            key: node.id, className: 'wb-flow-node', 'data-status': node.runtime?.status || 'idle',
-          },
-            h('div', { className: 'wb-flow-head' },
-              h('span', { className: 'wb-flow-title' }, String(node.title || node.id)),
-              flowChip(node.runtime?.status || 'idle')),
-            h('div', { className: 'wb-flow-meta' }, node.runtime?.executorLabel || t('flowNoExecutor')),
-            h('div', { className: 'wb-flow-ports' },
-              h('span', null, (node.inputs || []).map(port => port.type).join(' / ') || '—'),
-              h('span', null, '→'),
-              h('span', null, (node.outputs || []).map(port => port.type).join(' / ') || '—')),
-            node.runtime?.note ? h('div', { className: 'wb-note' }, node.runtime.note) : null,
-            (node.issues || []).length ? h('div', { className: 'wb-note wb-warn-note' }, node.issues.join(' · ')) : null)))
-          : h('div', { className: 'wb-note' }, t('flowEmpty')),
-        flow && flow.validation && flow.validation.ok === false
-          ? h('div', { className: 'wb-note wb-warn-note' }, t('flowBroken') + ' ' + (flow.validation.issues || []).map(issue => issue.message).join('；'))
-          : null,
-        flowNotice ? h('div', { className: 'wb-note' }, flowNotice) : null,
+        h('p', { className: 'wb-hint' }, t('graphHint')),
+        graphStage,
+        graphNotice || flowNotice ? h('div', { className: 'wb-note' }, graphNotice || flowNotice) : null,
         h('div', { className: 'wb-actions', style: { justifyContent: 'flex-end' } },
+          h('button', {
+            className: 'wb-button', type: 'button', onClick: seedGraphDemo,
+            disabled: graphBusy || flowBusy || Boolean(flow?.nodes?.length),
+          }, graphBusy ? t('graphDemoBusy') : t('graphDemo')),
           h('button', {
             className: 'wb-button', type: 'button', onClick: verifyFlowRun,
             disabled: flowBusy || !flow || !flow.nodes.length,
@@ -1446,7 +1730,18 @@ const momentButton = (id, label) => h('button', {
           h('button', {
             className: 'wb-button wb-button-primary', type: 'button', onClick: runFlowNow,
             disabled: flowBusy || !flow || !flow.validation || flow.validation.ok !== true,
-          }, flowBusy ? t('flowBusy') : t('flowRun'))))
+          }, flowBusy ? t('flowBusy') : t('flowRun'))),
+        flow && flow.validation && flow.validation.ok === false
+          ? h('div', { className: 'wb-note wb-warn-note' }, t('flowBroken') + ' ' + (flow.validation.issues || []).map(issue => issue.message).join('；'))
+          : null,
+        h('details', { className: 'wb-prompt wb-details' },
+          h('summary', null, t('graphEdges') + ' (' + String((flow?.edges || []).length) + ')'),
+          edgeList),
+        h('details', { className: 'wb-prompt wb-details' },
+          h('summary', null, t('graphAddNode')),
+          nodeForm),
+        edgeForm)
+
 
       const flyCard = h('section', { className: 'wb-card wb-fly' },
         h('div', { className: 'wb-card-head' },
@@ -1568,6 +1863,17 @@ const momentButton = (id, label) => h('button', {
             disabled: closeBusy || !closeDraft.next.trim(),
           }, closeBusy ? t('closeBusy') : t('closeSubmit'))))
 
+      const canvasDoor = h('section', { className: 'wb-card wb-canvas-door' },
+        h('div', { className: 'wb-card-head' },
+          h('h2', { style: { margin: 0 } }, t('graphTitle')),
+          h('span', { className: 'wb-chip' }, flow ? String(flow.nodes.length) + ' 节点' : '—')),
+        h('div', { className: 'wb-note' }, t('graphDoorHint')),
+        h('div', { className: 'wb-actions', style: { justifyContent: 'flex-end' } },
+          h('button', {
+            className: 'wb-button', type: 'button',
+            onClick: () => setMomentOverride('work'),
+          }, t('graphDoor'))))
+
       const attachBody = h('div', null,
         memoryCard,
         flyCard,
@@ -1575,12 +1881,14 @@ const momentButton = (id, label) => h('button', {
         channel?.channel === 'async'
           ? h('div', null, taskView)
           : h('details', { className: 'wb-prompt wb-details' }, h('summary', null, t('moreLongJobs')), taskView),
-        h('details', { className: 'wb-prompt wb-details' }, h('summary', null, t('continuity')), continuity))
+        h('details', { className: 'wb-prompt wb-details' }, h('summary', null, t('continuity')), continuity),
+        canvasDoor)
 
       const workBody = h('div', null,
+        flowView,
         liveCard,
         runCard,
-        h('details', { className: 'wb-prompt wb-details' }, h('summary', null, t('moreCanvas')), h('div', null, flowView, canvasView)))
+        h('details', { className: 'wb-prompt wb-details' }, h('summary', null, t('moreCanvas')), canvasView))
 
       const closeBody = h('div', null,
         closeForm,

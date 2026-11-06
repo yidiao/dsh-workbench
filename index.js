@@ -94,6 +94,7 @@ const FLOW_EDGE_API_PATH = '/dsh-workbench/api/flow/edge'
 const FLOW_EDGE_DELETE_API_PATH = '/dsh-workbench/api/flow/edge/delete'
 const FLOW_RUN_API_PATH = '/dsh-workbench/api/flow/run'
 const FLOW_VERIFY_API_PATH = '/dsh-workbench/api/flow/verify'
+const FLOW_DEMO_API_PATH = '/dsh-workbench/api/flow/demo'
 const FLYWHEEL_API_PATH = '/dsh-workbench/api/flywheel'
 const OUTCOME_API_PATH = '/dsh-workbench/api/outcome'
 const MODELS_API_PATH = '/dsh-workbench/api/models'
@@ -1515,6 +1516,42 @@ function flowNodeRuntime(node, flow) {
   }
 }
 
+// A first-run graph has to be one that can actually go green, or the canvas
+// teaches the wrong lesson. Two nodes, one typed edge, one artifact each: the
+// source writes its literal text, the sink pastes it into a template, and both
+// verifiers check a file that exists. Nothing here needs a model.
+function flowDemoSpec() {
+  const source = normaliseFlowNode({
+    title: '资料（原文）',
+    kind: 'source',
+    inputs: [],
+    outputs: [{ name: 'out', type: 'text' }],
+    executor: {
+      kind: 'text',
+      params: {
+        content: '本周完成三件事：\n1. 把记忆收成一份 JSON 真源；\n2. 右栏三时刻接上真实会话；\n3. 画布上每个绿点都有盘上的产物。',
+      },
+    },
+    verifier: { kind: 'file-exists', path: '' },
+  })
+  source.id = 'n_demo_source'
+  const sink = normaliseFlowNode({
+    title: '周报（模板）',
+    kind: 'sink',
+    inputs: [{ name: 'in', type: 'text' }],
+    outputs: [{ name: 'out', type: 'text' }],
+    executor: { kind: 'text', params: { template: '## 本周周报\n\n{{input}}\n\n— 由画布示例生成' } },
+    verifier: { kind: 'file-contains', path: '', contains: '本周完成' },
+  })
+  sink.id = 'n_demo_report'
+  return {
+    version: 1,
+    nodes: [source, sink],
+    edges: [{ id: 'e_demo_out', from: { node: 'n_demo_source', port: 'out' }, to: { node: 'n_demo_report', port: 'in' } }],
+    state: {},
+  }
+}
+
 function flowPayload(flow) {
   const validation = validateFlow(flow)
   const badEdges = new Set(validation.issues.map(issue => issue.edgeId).filter(Boolean))
@@ -2296,6 +2333,33 @@ export async function apply(ctx) {
         summary: result.results.length + ' 个节点 · 绿 ' + green + ' · 灰 ' + gray,
       })
       sendJson(res, 200, { ok: true, results: result.results, flow: flowPayload(readFlow()) })
+    },
+  }))
+
+  disposers.push(ctx.webServer.register({
+    kind: 'exact',
+    path: FLOW_DEMO_API_PATH,
+    handler: async (req, res) => {
+      if (!guard(req, res, 'POST')) return
+      const body = await readJsonBody(req)
+      if (body.tooLarge) { sendJson(res, 413, { ok: false, error: '请求体过大' }); return }
+      if (body.error) { sendJson(res, 400, { ok: false, error: '请求体不是合法 JSON 对象' }); return }
+      const existing = readFlow()
+      if (existing.nodes.length) {
+        sendJson(res, 409, { ok: false, code: 'canvas-not-empty', error: '画布上已经有节点了：示例只放进空画布，免得覆盖你的东西' })
+        return
+      }
+      const flow = flowDemoSpec()
+      const validation = validateFlow(flow)
+      if (!validation.ok) {
+        // The seed is code, not user input: if it does not validate the build is
+        // wrong, and shipping a broken example would poison the first run.
+        sendJson(res, 500, { ok: false, code: 'demo-invalid', error: '示例图自身校验失败', issues: validation.issues })
+        return
+      }
+      writeFlow(flow)
+      appendAudit({ action: 'flow.demo', requestId: requestId(body.json.requestId), summary: '示例图：资料 → 周报' })
+      sendJson(res, 200, { ok: true, seeded: true, flow: flowPayload(readFlow()) })
     },
   }))
 
