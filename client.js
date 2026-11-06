@@ -55,6 +55,8 @@ window.__ModuleLoader__.load({
       graphSaved: 'Saved.', graphEdges: 'Connections', graphNoEdges: 'No connections yet.',
       graphParamsPlaceholder: 'Literal text, or a template using {{input}}', graphRunFirst: 'Run graph to produce artifacts.',
       graphStep: 'step',
+      graphZoomIn: 'Zoom in', graphZoomOut: 'Zoom out', graphArrange: 'Tidy up',
+      graphDragHint: 'Drag a card to move it; the position is remembered. It is view state only — it never changes what depends on what.',
       graphDoor: 'Open the canvas', graphDoorHint: 'Assembling a next step? The canvas is read-only about relations and honest about what ran.',
       flyTitle: 'Continue from here', flyReward: 'promoted',
       flyNone: 'Nothing is recommended yet — a card is recommended after 2 verified outcomes and no failure.',
@@ -98,6 +100,8 @@ window.__ModuleLoader__.load({
       graphSaved: '已保存。', graphEdges: '连线', graphNoEdges: '还没有连线。',
       graphParamsPlaceholder: '直接写文字，或用 {{input}} 的模板', graphRunFirst: '点「跑一遍画布」才会产出文件。',
       graphStep: '步骤',
+      graphZoomIn: '放大', graphZoomOut: '缩小', graphArrange: '整理',
+      graphDragHint: '按住卡片可拖动，位置会被记住。它只是视图状态，永远不改变依赖关系。',
       graphDoor: '打开画布', graphDoorHint: '下一步要装配？画布只读地画关系，也老实说哪些真跑过。',
       flowRan: '跑完。已验证：', flowRanVerify: '重验完。已验证：',
       flyTitle: '从这里继续', flyReward: '已晋升',
@@ -310,7 +314,13 @@ window.__ModuleLoader__.load({
       .wb-run-row-goal{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
       .wb-run-row-meta{flex:0 0 auto;color:var(--dsw-alias-label-secondary);font-size:10px}
       .wb-run-row-tpl{flex:0 0 auto;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;border:1px solid color-mix(in srgb,var(--dsw-alias-brand-primary) 40%,var(--dsw-alias-border-l1));border-radius:999px;padding:1px 7px;color:var(--dsw-alias-brand-primary);font-size:10px;font-weight:650}
-      .wb-graph-stage{position:relative;margin:10px 0 12px;overflow:auto;border:1px solid var(--dsw-alias-border-l1);border-radius:12px;background:var(--dsw-alias-bg-layer-2);padding:2px}
+      .wb-graph-viewport{max-height:420px;overflow:auto;margin:8px 0 12px;border:1px solid var(--dsw-alias-border-l1);border-radius:12px;background:var(--dsw-alias-bg-layer-2)}
+      .wb-graph-canvas{position:relative}
+      .wb-graph-stage{position:absolute;top:0;left:0;border:none;background:transparent}
+      .wb-graph-stage[data-dragging=true]{cursor:grabbing}
+      .wb-graph-tools{justify-content:flex-end;gap:4px;margin:2px 0 6px}
+      .wb-graph-node{cursor:grab;touch-action:none;user-select:none}
+      .wb-graph-node:hover{box-shadow:0 0 0 1px var(--dsw-alias-border-l3)}
       .wb-graph-svg{position:absolute;inset:0;pointer-events:none;overflow:visible}
       .wb-graph-line{fill:none;stroke:var(--dsw-alias-border-l3);stroke-width:1.6px;stroke-dasharray:none}
       .wb-graph-line[data-valid=no]{stroke:var(--dsw-alias-state-error-primary);stroke-dasharray:5 4}
@@ -560,7 +570,18 @@ const [momentOverride, setMomentOverride] = React.useState('')
       const [edgeDraft, setEdgeDraft] = React.useState({ from: '', to: '' })
       const [graphBusy, setGraphBusy] = React.useState(false)
       const [graphNotice, setGraphNotice] = React.useState('')
+      const [viewState, setViewState] = React.useState({ positions: {}, zoom: 1 })
+      const [dragState, setDragState] = React.useState(null)
       const prefilled = React.useRef(false)
+
+      // The Host owns the view file, so every payload that carries a view resets
+      // the local one - a saved layout can never disagree with what is on disk.
+      function applyFlow(payload) {
+        if (!payload || typeof payload !== 'object') return
+        setFlow(payload)
+        const view = payload.view
+        if (view) setViewState({ positions: view.positions || {}, zoom: Number(view.zoom) || 1 })
+      }
 
       const applyRuns = React.useCallback(items => {
         if (!Array.isArray(items)) return
@@ -641,7 +662,7 @@ const [momentOverride, setMomentOverride] = React.useState('')
             const flowResponse = await fetch('/dsh-workbench/api/flow', { cache: 'no-store', credentials: 'same-origin' })
             if (flowResponse.ok) {
               const payload = await flowResponse.json()
-              if (payload && payload.ok === true) setFlow(payload)
+              if (payload && payload.ok === true) applyFlow(payload)
             }
           } catch { /* keep the previous graph */ }
           try {
@@ -778,7 +799,7 @@ const boundSessionId = String(sessionId || '').trim()
         try {
           const result = await postJsonStatus('/dsh-workbench/api/flow/run', { confirm: true })
           if (!result.ok) { setFlowNotice(String(result.payload?.error || ('HTTP ' + result.status))); return }
-          if (result.payload.flow) setFlow(result.payload.flow)
+          if (result.payload.flow) applyFlow(result.payload.flow)
           const items = Array.isArray(result.payload.results) ? result.payload.results : []
           const green = items.filter(item => item.status === 'green').length
           const gray = items.filter(item => item.status === 'gray').length
@@ -792,7 +813,7 @@ const boundSessionId = String(sessionId || '').trim()
         try {
           const result = await postJsonStatus('/dsh-workbench/api/flow/verify', {})
           if (!result.ok) { setFlowNotice(String(result.payload?.error || ('HTTP ' + result.status))); return }
-          if (result.payload.flow) setFlow(result.payload.flow)
+          if (result.payload.flow) applyFlow(result.payload.flow)
           const items = Array.isArray(result.payload.results) ? result.payload.results : []
           const green = items.filter(item => item.status === 'green').length
           setFlowNotice(t('flowRanVerify') + ' ' + green + ' / ' + items.length)
@@ -807,7 +828,7 @@ const boundSessionId = String(sessionId || '').trim()
         setGraphBusy(true); setGraphNotice('')
         try {
           const result = await postJsonStatus(path, body)
-          if (result.payload?.flow) setFlow(result.payload.flow)
+          if (result.payload?.flow) applyFlow(result.payload.flow)
           if (result.ok) setGraphNotice(t(doneKey))
           else setGraphNotice(String(result.payload?.error || ('HTTP ' + result.status)))
           return Boolean(result.ok)
@@ -1541,7 +1562,7 @@ const momentButton = (id, label) => h('button', {
       const GRAPH_GAP_X = 62
       const GRAPH_GAP_Y = 16
       const GRAPH_PAD = 6
-      const graphLayout = (() => {
+      const graphAutoLayout = (() => {
         const members = flow?.nodes || []
         const known = new Set(members.map(node => node.id))
         const links = (flow?.edges || []).filter(edge => known.has(edge?.from?.node) && known.has(edge?.to?.node))
@@ -1560,27 +1581,42 @@ const momentButton = (id, label) => h('button', {
           if (!columns.has(level)) columns.set(level, [])
           columns.get(level).push(node)
         }
-        const levels = Math.max(1, ...[...columns.keys()].map(level => level + 1))
         const rows = Math.max(1, ...[...columns.values()].map(list => list.length))
-        const width = GRAPH_PAD * 2 + levels * GRAPH_CARD_W + (levels - 1) * GRAPH_GAP_X
-        const height = GRAPH_PAD * 2 + rows * GRAPH_CARD_H + (rows - 1) * GRAPH_GAP_Y
         const boxes = new Map()
         for (const [level, list] of columns) {
           list.forEach((node, index) => {
             boxes.set(node.id, {
               left: GRAPH_PAD + level * (GRAPH_CARD_W + GRAPH_GAP_X),
               top: GRAPH_PAD + index * (GRAPH_CARD_H + GRAPH_GAP_Y),
-              width: GRAPH_CARD_W,
-              height: GRAPH_CARD_H,
             })
           })
         }
-        return { width, height, boxes, links }
+        return { boxes, columns, rows }
+      })()
+
+      // A dragged card keeps its pixel position across reloads; everything it
+      // does NOT say is dependency: the graph stays the only source for that.
+      const graphBoxes = new Map()
+      for (const node of flow?.nodes || []) {
+        const saved = viewState.positions[node.id]
+        const fallback = graphAutoLayout.boxes.get(node.id) || { left: GRAPH_PAD, top: GRAPH_PAD }
+        const left = saved ? saved.x : fallback.left
+        const top = saved ? saved.y : fallback.top
+        graphBoxes.set(node.id, { left, top, width: GRAPH_CARD_W, height: GRAPH_CARD_H })
+      }
+      const graphSize = (() => {
+        let width = GRAPH_PAD * 2 + GRAPH_CARD_W
+        let height = GRAPH_PAD * 2 + GRAPH_CARD_H
+        for (const box of graphBoxes.values()) {
+          width = Math.max(width, box.left + box.width + GRAPH_PAD)
+          height = Math.max(height, box.top + box.height + GRAPH_PAD)
+        }
+        return { width, height }
       })()
 
       const graphCurve = edge => {
-        const from = graphLayout.boxes.get(edge.from?.node)
-        const to = graphLayout.boxes.get(edge.to?.node)
+        const from = graphBoxes.get(edge.from?.node)
+        const to = graphBoxes.get(edge.to?.node)
         if (!from || !to) return ''
         const x1 = from.left + from.width
         const y1 = from.top + from.height / 2
@@ -1588,6 +1624,63 @@ const momentButton = (id, label) => h('button', {
         const y2 = to.top + to.height / 2
         const bend = Math.max(26, Math.abs(x2 - x1) / 2)
         return 'M' + x1 + ',' + y1 + ' C' + (x1 + bend) + ',' + y1 + ' ' + (x2 - bend) + ',' + y2 + ' ' + x2 + ',' + y2
+      }
+
+      // Drag is a plain state machine so it can be driven by a test as well as a
+      // mouse: pointerdown records the grab point, pointermove moves that one
+      // card, pointerup asks the Host to remember it.
+      function beginDrag(node, event) {
+        if (event?.button !== undefined && event.button !== 0) return
+        event?.preventDefault?.()
+        const box = graphBoxes.get(node.id)
+        if (!box) return
+        setDragState({ id: node.id, startX: Number(event?.clientX) || 0, startY: Number(event?.clientY) || 0, originX: box.left, originY: box.top })
+      }
+
+      function moveDrag(event) {
+        if (!dragState) return
+        const zoom = viewState.zoom || 1
+        const dx = ((Number(event?.clientX) || 0) - dragState.startX) / zoom
+        const dy = ((Number(event?.clientY) || 0) - dragState.startY) / zoom
+        setViewState(previous => ({
+          ...previous,
+          positions: {
+            ...previous.positions,
+            [dragState.id]: {
+              x: Math.max(0, Math.round(dragState.originX + dx)),
+              y: Math.max(0, Math.round(dragState.originY + dy)),
+            },
+          },
+        }))
+      }
+
+      function endDrag() {
+        if (!dragState) return
+        const id = dragState.id
+        const point = viewState.positions[id]
+        setDragState(null)
+        if (!point) return
+        saveFlowView({ [id]: point })
+      }
+
+      async function saveFlowView(positions, extra = {}) {
+        try {
+          const result = await postJsonStatus('/dsh-workbench/api/flow/view/save', { positions, ...extra, requestId: 'view-' + Date.now() })
+          if (result.ok && result.payload) {
+            setViewState({ positions: result.payload.positions || {}, zoom: Number(result.payload.zoom) || 1 })
+          } else if (!result.ok) setGraphNotice(String(result.payload?.error || ('HTTP ' + result.status)))
+        } catch (failure) { setGraphNotice(String(failure?.message || failure)) }
+      }
+
+      function arrangeGraph() {
+        setViewState({ positions: {}, zoom: viewState.zoom })
+        saveFlowView(undefined, { arrange: true })
+      }
+
+      function zoomGraph(direction) {
+        const next = Math.min(1.6, Math.max(0.5, Math.round(((viewState.zoom || 1) + direction * 0.15) * 10) / 10))
+        setViewState(previous => ({ ...previous, zoom: next }))
+        saveFlowView(undefined, { zoom: next })
       }
 
       const graphSelect = (options, value, onChange, id) => h('select', {
@@ -1668,54 +1761,85 @@ const momentButton = (id, label) => h('button', {
         : h('div', { className: 'wb-note' }, t('graphNoEdges'))
 
       const graphStage = (flow?.nodes || []).length
-        ? h('div', { className: 'wb-graph-stage', style: { width: graphLayout.width + 'px', height: graphLayout.height + 'px' } },
-          h('svg', {
-            className: 'wb-graph-svg', width: graphLayout.width, height: graphLayout.height,
-            viewBox: '0 0 ' + graphLayout.width + ' ' + graphLayout.height,
-            'aria-hidden': 'true',
-          },
-            h('defs', null, h('marker', {
-              id: 'wb-graph-arrow', viewBox: '0 0 8 8', refX: 7, refY: 4,
-              markerWidth: 6, markerHeight: 6, orient: 'auto-start-reverse',
-            }, h('path', { d: 'M0,0 L8,4 L0,8 z', className: 'wb-graph-arrow' }))),
-            graphLayout.links.map(edge => h('path', {
-              key: 'e-' + edge.id,
-              d: graphCurve(edge),
-              className: 'wb-graph-line',
-              'data-valid': edge.valid === false ? 'no' : 'yes',
-              markerEnd: 'url(#wb-graph-arrow)',
-            }))),
-          (flow?.nodes || []).map(node => {
-            const box = graphLayout.boxes.get(node.id)
-            if (!box) return null
-            return h('div', {
-              key: node.id,
-              className: 'wb-graph-node',
-              'data-status': node.runtime?.status || 'idle',
-              style: { left: box.left + 'px', top: box.top + 'px', width: box.width + 'px', height: box.height + 'px' },
+        ? h('div', { className: 'wb-graph-viewport' },
+          h('div', {
+            className: 'wb-graph-canvas',
+            style: {
+              width: (graphSize.width * (viewState.zoom || 1)) + 'px',
+              height: (graphSize.height * (viewState.zoom || 1)) + 'px',
             },
-              h('div', { className: 'wb-flow-head' },
-                h('span', { className: 'wb-flow-title' }, String(node.title || node.id)),
-                flowChip(node.runtime?.status || 'idle')),
-              h('div', { className: 'wb-flow-meta' }, node.runtime?.executorLabel || t('flowNoExecutor')),
-              h('div', { className: 'wb-flow-ports' },
-                h('span', null, (node.inputs || []).map(port => port.type).join(' / ') || '—'),
-                h('span', null, '→'),
-                h('span', null, (node.outputs || []).map(port => port.type).join(' / ') || '—')),
-              node.runtime?.note ? h('div', { className: 'wb-note' }, node.runtime.note) : null,
-              (node.issues || []).length ? h('div', { className: 'wb-note wb-warn-note' }, node.issues.join(' · ')) : null,
-              h('button', {
-                className: 'wb-graph-remove', type: 'button', title: t('graphDeleted'),
-                disabled: graphBusy, onClick: () => removeGraphNode(node.id),
-              }, '×'))
-          }))
+          },
+            h('div', {
+              className: 'wb-graph-stage',
+              'data-dragging': dragState ? 'true' : 'false',
+              style: {
+                width: graphSize.width + 'px',
+                height: graphSize.height + 'px',
+                transform: 'scale(' + (viewState.zoom || 1) + ')',
+                transformOrigin: '0 0',
+                position: 'absolute',
+                top: 0,
+                left: 0,
+              },
+              onPointerMove: moveDrag,
+              onPointerUp: endDrag,
+              onPointerLeave: endDrag,
+            },
+              h('svg', {
+                className: 'wb-graph-svg', width: graphSize.width, height: graphSize.height,
+                viewBox: '0 0 ' + graphSize.width + ' ' + graphSize.height,
+                'aria-hidden': 'true',
+              },
+                h('defs', null, h('marker', {
+                  id: 'wb-graph-arrow', viewBox: '0 0 8 8', refX: 7, refY: 4,
+                  markerWidth: 6, markerHeight: 6, orient: 'auto-start-reverse',
+                }, h('path', { d: 'M0,0 L8,4 L0,8 z', className: 'wb-graph-arrow' }))),
+                (flow?.edges || []).map(edge => h('path', {
+                  key: 'e-' + edge.id,
+                  d: graphCurve(edge),
+                  className: 'wb-graph-line',
+                  'data-valid': edge.valid === false ? 'no' : 'yes',
+                  markerEnd: 'url(#wb-graph-arrow)',
+                }))),
+              (flow?.nodes || []).map(node => {
+                const box = graphBoxes.get(node.id)
+                if (!box) return null
+                return h('div', {
+                  key: node.id,
+                  className: 'wb-graph-node',
+                  'data-status': node.runtime?.status || 'idle',
+                  'data-node': node.id,
+                  style: { left: box.left + 'px', top: box.top + 'px', width: box.width + 'px', height: box.height + 'px' },
+                  onPointerDown: event => beginDrag(node, event),
+                },
+                  h('div', { className: 'wb-flow-head' },
+                    h('span', { className: 'wb-flow-title' }, String(node.title || node.id)),
+                    flowChip(node.runtime?.status || 'idle')),
+                  h('div', { className: 'wb-flow-meta' }, node.runtime?.executorLabel || t('flowNoExecutor')),
+                  h('div', { className: 'wb-flow-ports' },
+                    h('span', null, (node.inputs || []).map(port => port.type).join(' / ') || '—'),
+                    h('span', null, '→'),
+                    h('span', null, (node.outputs || []).map(port => port.type).join(' / ') || '—')),
+                  node.runtime?.note ? h('div', { className: 'wb-note' }, node.runtime.note) : null,
+                  (node.issues || []).length ? h('div', { className: 'wb-note wb-warn-note' }, node.issues.join(' · ')) : null,
+                  h('button', {
+                    className: 'wb-graph-remove', type: 'button', title: t('graphDeleted'),
+                    disabled: graphBusy, onClick: event => { event?.stopPropagation?.(); removeGraphNode(node.id) },
+                  }, '×'))
+              }))))
         : h('div', { className: 'wb-empty' }, t('graphEmpty'))
 
       const flowView = h('section', { className: 'wb-card wb-flow' },
         h('div', { className: 'wb-card-head' },
           h('h2', { style: { margin: 0 } }, t('graphTitle')),
           h('span', { className: 'wb-note' }, flow ? String(flow.nodes.length) + ' 节点 · ' + String(flow.edges.length) + ' 边' : '—')),
+        h('div', { className: 'wb-actions wb-graph-tools' },
+          h('button', { className: 'wb-button wb-button-quiet', type: 'button', onClick: () => zoomGraph(-1), disabled: (viewState.zoom || 1) <= 0.5, title: t('graphZoomOut') }, '−'),
+          h('span', { className: 'wb-chip' }, Math.round((viewState.zoom || 1) * 100) + '%'),
+          h('button', { className: 'wb-button wb-button-quiet', type: 'button', onClick: () => zoomGraph(1), disabled: (viewState.zoom || 1) >= 1.6, title: t('graphZoomIn') }, '+'),
+          h('button', { className: 'wb-button wb-button-quiet', type: 'button', onClick: arrangeGraph, disabled: graphBusy }, t('graphArrange'))),
         h('p', { className: 'wb-hint' }, t('graphHint')),
+        h('p', { className: 'wb-note' }, t('graphDragHint')),        h('p', { className: 'wb-hint' }, t('graphHint')),
         graphStage,
         graphNotice || flowNotice ? h('div', { className: 'wb-note' }, graphNotice || flowNotice) : null,
         h('div', { className: 'wb-actions', style: { justifyContent: 'flex-end' } },

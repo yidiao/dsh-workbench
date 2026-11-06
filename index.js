@@ -95,6 +95,8 @@ const FLOW_EDGE_DELETE_API_PATH = '/dsh-workbench/api/flow/edge/delete'
 const FLOW_RUN_API_PATH = '/dsh-workbench/api/flow/run'
 const FLOW_VERIFY_API_PATH = '/dsh-workbench/api/flow/verify'
 const FLOW_DEMO_API_PATH = '/dsh-workbench/api/flow/demo'
+const FLOW_VIEW_API_PATH = '/dsh-workbench/api/flow/view'
+const FLOW_VIEW_SAVE_API_PATH = '/dsh-workbench/api/flow/view/save'
 const FLYWHEEL_API_PATH = '/dsh-workbench/api/flywheel'
 const OUTCOME_API_PATH = '/dsh-workbench/api/outcome'
 const MODELS_API_PATH = '/dsh-workbench/api/models'
@@ -1345,6 +1347,10 @@ function templateOutcomeCards() {
 
 const FLOW = join(WB_DIR, 'flow.json')
 const FLOW_OUT = join(WB_DIR, 'flow-out')
+const FLOW_VIEW = join(WB_DIR, 'flow-view.json')
+const MAX_VIEW_NODES = 60
+const MIN_ZOOM = 0.5
+const MAX_ZOOM = 1.6
 const MAX_FLOW_NODES = 40
 const MAX_FLOW_EDGES = 80
 const PORT_TYPES = new Set(['text', 'file', 'image', 'json', 'any'])
@@ -1369,6 +1375,33 @@ function readFlow() {
     edges: Array.isArray(raw?.edges) ? raw.edges.filter(edge => edge && typeof edge === 'object').map(edge => ({ ...edge })) : [],
     state: raw && typeof raw.state === 'object' && raw.state ? { ...raw.state } : {},
   }
+}
+
+function clampViewNumber(value, min, max, fallback) {
+  const number = Number(value)
+  if (!Number.isFinite(number)) return fallback
+  return Math.round(Math.min(max, Math.max(min, number)) * 10) / 10
+}
+
+// Positions are clamped, not trusted: a dragged card that got a NaN from a
+// half-finished gesture must never make the canvas unopenable.
+function readFlowView() {
+  const raw = readJsonSafe(FLOW_VIEW, null)
+  const positions = {}
+  const source = raw && typeof raw.positions === 'object' && raw.positions ? raw.positions : {}
+  for (const [id, point] of Object.entries(source).slice(0, MAX_VIEW_NODES)) {
+    if (!id) continue
+    positions[id] = {
+      x: clampViewNumber(point?.x, 0, 4000, 0),
+      y: clampViewNumber(point?.y, 0, 4000, 0),
+    }
+  }
+  return { version: 1, positions, zoom: clampViewNumber(raw?.zoom, MIN_ZOOM, MAX_ZOOM, 1) }
+}
+
+function writeFlowView(view) {
+  ensureDir()
+  writeFileSync(FLOW_VIEW, JSON.stringify({ version: 1, positions: view.positions, zoom: view.zoom }, null, 2) + '\n', 'utf-8')
 }
 
 function writeFlow(flow) {
@@ -1568,6 +1601,7 @@ function flowPayload(flow) {
     edges: flow.edges.map(edge => ({ ...edge, valid: !badEdges.has(edge.id) })),
     validation,
     order: validation.order,
+    view: readFlowView(),
     executors: Object.entries(EXECUTOR_KINDS).map(([kind, value]) => ({ kind, label: value.label, available: value.available })),
     verifiers: [...VERIFIER_KINDS],
     fetchedAt: new Date().toISOString(),
@@ -2333,6 +2367,63 @@ export async function apply(ctx) {
         summary: result.results.length + ' 个节点 · 绿 ' + green + ' · 灰 ' + gray,
       })
       sendJson(res, 200, { ok: true, results: result.results, flow: flowPayload(readFlow()) })
+    },
+  }))
+
+  disposers.push(ctx.webServer.register({
+    kind: 'exact',
+    path: FLOW_VIEW_API_PATH,
+    handler: async (req, res) => {
+      if (!guard(req, res, 'GET')) return
+      sendJson(res, 200, { ok: true, ...readFlowView() })
+    },
+  }))
+
+  disposers.push(ctx.webServer.register({
+    kind: 'exact',
+    path: FLOW_VIEW_SAVE_API_PATH,
+    handler: async (req, res) => {
+      if (!guard(req, res, 'POST')) return
+      const body = await readJsonBody(req)
+      if (body.tooLarge) { sendJson(res, 413, { ok: false, error: '请求体过大' }); return }
+      if (body.error) { sendJson(res, 400, { ok: false, error: '请求体不是合法 JSON 对象' }); return }
+      const input = body.json
+      const flow = readFlow()
+      const known = new Set(flow.nodes.map(node => node.id))
+      const current = readFlowView()
+      // arrange:true is the "tidy up" action - it drops stored positions and lets
+      // the computed layered layout take over again.
+      const arranging = input.arrange === true
+      const positions = arranging ? {} : { ...current.positions }
+      if (!arranging && input.positions !== undefined) {
+        if (input.positions === null) {
+          for (const id of Object.keys(positions)) delete positions[id]
+        } else {
+          if (typeof input.positions !== 'object') { sendJson(res, 400, { ok: false, error: 'positions 必须是对象' }); return }
+          for (const [id, point] of Object.entries(input.positions)) {
+            // A position for a card that is not on the canvas is a client bug;
+            // saying so beats storing a ghost coordinate.
+            if (!known.has(id)) { sendJson(res, 409, { ok: false, code: 'unknown-node', error: '画布上没有节点 ' + id }); return }
+            positions[id] = {
+              x: clampViewNumber(point?.x, 0, 4000, 0),
+              y: clampViewNumber(point?.y, 0, 4000, 0),
+            }
+          }
+        }
+      }
+      for (const id of Object.keys(positions)) if (!known.has(id)) delete positions[id]
+      const next = {
+        version: 1,
+        positions,
+        zoom: input.zoom === undefined ? current.zoom : clampViewNumber(input.zoom, MIN_ZOOM, MAX_ZOOM, current.zoom),
+      }
+      writeFlowView(next)
+      appendAudit({
+        action: 'flow.view',
+        requestId: requestId(input.requestId),
+        summary: arranging ? '整理画布' : Object.keys(positions).length + ' 个节点位置 · 缩放 ' + next.zoom,
+      })
+      sendJson(res, 200, { ok: true, ...next })
     },
   }))
 

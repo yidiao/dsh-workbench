@@ -1288,6 +1288,62 @@ const flowActions = JSON.parse(flowAuditRes.body).entries.map(entry => entry.act
 for (const action of ['flow.node', 'flow.node.update', 'flow.edge', 'flow.run', 'flow.verify']) {
   if (!flowActions.includes(action)) fail('audit missing ' + action)
 }
+// --- v0.14 view state: coordinates are view-only, clamped, Host-owned -----
+const viewRoute = registered.find(r => r.regType === 'web' && r.path === '/dsh-workbench/api/flow/view')
+const viewSaveRoute = registered.find(r => r.regType === 'web' && r.path === '/dsh-workbench/api/flow/view/save')
+if (!viewRoute || !viewSaveRoute) fail('view routes missing')
+
+const freshViewRes = response()
+await viewRoute.handler(getReq(viewRoute.path), freshViewRes)
+if (freshViewRes.statusCode !== 200) fail('view read status ' + freshViewRes.statusCode + ' ' + freshViewRes.body)
+const freshView = JSON.parse(freshViewRes.body)
+if (freshView.zoom !== 1 || Object.keys(freshView.positions).length !== 0) fail('a fresh view must be empty at 100%: ' + freshViewRes.body)
+
+const movedRes = response()
+await viewSaveRoute.handler(postReq(viewSaveRoute.path, { positions: { [sourceNode.id]: { x: 120, y: 40 } } }), movedRes)
+if (movedRes.statusCode !== 200) fail('view save status ' + movedRes.statusCode + ' ' + movedRes.body)
+const movedView = JSON.parse(movedRes.body)
+if (movedView.positions[sourceNode.id]?.x !== 120 || movedView.positions[sourceNode.id]?.y !== 40) {
+  fail('view save lost the position: ' + movedRes.body)
+}
+const viewAfterSave = response()
+await viewRoute.handler(getReq(viewRoute.path), viewAfterSave)
+if (JSON.parse(viewAfterSave.body).positions[sourceNode.id]?.x !== 120) fail('saved position did not persist')
+
+// a coordinate for a card that is not on the canvas is refused, not stored
+const ghostPosRes = response()
+await viewSaveRoute.handler(postReq(viewSaveRoute.path, { positions: { n_not_on_canvas: { x: 10, y: 10 } } }), ghostPosRes)
+if (ghostPosRes.statusCode !== 409 || JSON.parse(ghostPosRes.body).code !== 'unknown-node') {
+  fail('a position for an unknown card was accepted: ' + ghostPosRes.statusCode + ' ' + ghostPosRes.body)
+}
+
+// clamping: a wild drag must never make the canvas unopenable
+const clampRes = response()
+await viewSaveRoute.handler(postReq(viewSaveRoute.path, { positions: { [sourceNode.id]: { x: 99999, y: -5 } }, zoom: 9 }), clampRes)
+const clamped = JSON.parse(clampRes.body)
+if (clamped.positions[sourceNode.id].x !== 4000 || clamped.positions[sourceNode.id].y !== 0) {
+  fail('positions were not clamped: ' + clampRes.body)
+}
+if (clamped.zoom !== 1.6) fail('zoom was not clamped: ' + clampRes.body)
+
+// the flow payload carries the view, so one GET paints the canvas
+const flowWithViewRes = response()
+await flowRoute.handler(getReq(flowRoute.path), flowWithViewRes)
+const flowWithView = JSON.parse(flowWithViewRes.body)
+if (!flowWithView.view || flowWithView.view.zoom !== 1.6) fail('flow payload does not carry the view: ' + flowWithViewRes.body)
+
+// arrange drops every stored position and gives the computed layout back
+const arrangeRes = response()
+await viewSaveRoute.handler(postReq(viewSaveRoute.path, { arrange: true }), arrangeRes)
+const arranged = JSON.parse(arrangeRes.body)
+if (Object.keys(arranged.positions).length !== 0) fail('arrange left positions behind: ' + arrangeRes.body)
+if (arranged.zoom !== 1.6) fail('arrange must not reset the zoom: ' + arrangeRes.body)
+
+const viewAuditRes = response()
+await auditRoute.handler(getReq(auditRoute.path + '?limit=80'), viewAuditRes)
+if (!JSON.parse(viewAuditRes.body).entries.some(entry => entry.action === 'flow.view')) fail('audit missing flow.view')
+console.log('view: positions persist and clamp | a position for a card not on the canvas is refused | flow payload carries the view | arrange drops positions but keeps zoom')
+
 console.log('graph: typed ports + refused edges (type/port/self/node/cycle) | a two-node text flow writes real artifacts | verifier red on a missing word, red after the artifact is deleted | unregistered executor stays gray and writes nothing')
 console.log('graph first run: the example seeds two nodes + one typed edge, runs green on both, refuses to overwrite a non-empty canvas')
 

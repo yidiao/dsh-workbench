@@ -74,6 +74,7 @@ const reports = {
 
 let flowBroken = false
 let canvasEmpty = false
+const mockView = { positions: { n_src: { x: 150, y: 36 } }, zoom: 1 }
 function graphPayload() {
   const nodes = [
     {
@@ -104,6 +105,7 @@ function graphPayload() {
       { kind: 'text', label: '模板拼装（本地，真跑）', available: true },
       { kind: 'image', label: '模型生图（v1.1 桥，未接）', available: false },
     ],
+    view: { positions: canvasEmpty ? {} : mockView.positions, zoom: canvasEmpty ? 1 : mockView.zoom },
     verifiers: ['file-exists', 'file-contains'],
     fetchedAt: '2026-11-06T12:00:00.000Z',
   }
@@ -260,6 +262,12 @@ globalThis.fetch = async (raw, options) => {
       ],
       flow: payload,
     })
+  }
+  if (path === '/dsh-workbench/api/flow/view/save') {
+    if (body?.arrange === true) mockView.positions = {}
+    if (body?.positions && typeof body.positions === 'object') mockView.positions = { ...mockView.positions, ...body.positions }
+    if (body?.zoom !== undefined) mockView.zoom = Number(body.zoom)
+    return ok({ ok: true, version: 1, positions: mockView.positions, zoom: mockView.zoom })
   }
   if (path === '/dsh-workbench/api/flow/demo') {
     canvasEmpty = false
@@ -466,7 +474,61 @@ const edgePost = requests.slice(beforeEdge).find(r => r.path === '/dsh-workbench
 if (!edgePost) fail('connect did not call the edge route')
 if (edgePost.body.from?.node !== 'n_src' || edgePost.body.to?.node !== 'n_cover') fail('edge endpoints not posted: ' + JSON.stringify(edgePost.body))
 if (!includesText(tree, 'graphEdgeAdded')) fail('edge creation not reported', tree)
-console.log('canvas: stage + drawn connection | add-node and connect call their routes and repaint')
+// view state: a saved position wins over the computed slot
+const placedNode = findNode(tree, n => n.props?.['data-node'] === 'n_src')
+if (!placedNode) fail('no card carries its node id', tree)
+if (placedNode.props.style.left !== '150px' || placedNode.props.style.top !== '36px') {
+  fail('saved position not honoured: ' + JSON.stringify(placedNode.props.style))
+}
+
+// drag: pointerdown records the grab, pointermove moves that card, pointerup saves
+placedNode.props.onPointerDown({ button: 0, clientX: 100, clientY: 100, preventDefault() {} })
+tree = renderPanel()
+const dragStage = findNode(tree, n => String(n.props?.className || '').includes('wb-graph-stage'))
+if (!dragStage) fail('no drop surface after grabbing a card', tree)
+if (dragStage.props['data-dragging'] !== 'true') fail('the canvas does not know a card is grabbed', tree)
+dragStage.props.onPointerMove({ clientX: 160, clientY: 130 })
+tree = renderPanel()
+const draggedNode = findNode(tree, n => n.props?.['data-node'] === 'n_src')
+if (draggedNode.props.style.left !== '210px' || draggedNode.props.style.top !== '66px') {
+  fail('the card did not follow the pointer: ' + JSON.stringify(draggedNode.props.style))
+}
+const beforeViewSave = requests.length
+findNode(tree, n => String(n.props?.className || '').includes('wb-graph-stage')).props.onPointerUp({})
+tree = renderPanel()
+await new Promise(resolve => setTimeout(resolve, 25))
+tree = renderPanel()
+const viewSaveCall = requests.slice(beforeViewSave).find(r => r.path === '/dsh-workbench/api/flow/view/save')
+if (!viewSaveCall) fail('dropping a card did not ask the Host to remember it')
+if (viewSaveCall.body.positions?.n_src?.x !== 210 || viewSaveCall.body.positions?.n_src?.y !== 66) {
+  fail('the saved position is not the dropped one: ' + JSON.stringify(viewSaveCall.body))
+}
+if (findNode(tree, n => String(n.props?.className || '').includes('wb-graph-stage')).props['data-dragging'] !== 'false') {
+  fail('the canvas still thinks a card is grabbed after the drop', tree)
+}
+
+// zoom keeps working and is remembered
+const beforeZoom = requests.length
+clickButton(tree, '+')
+tree = renderPanel()
+await new Promise(resolve => setTimeout(resolve, 25))
+tree = renderPanel()
+const zoomCall = requests.slice(beforeZoom).find(r => r.path === '/dsh-workbench/api/flow/view/save')
+if (!zoomCall || Math.abs(Number(zoomCall.body.zoom) - 1.2) > 0.001) fail('zoom did not reach the Host: ' + JSON.stringify(zoomCall?.body))
+if (!findText(tree, '120%')) fail('the zoom level is not shown', tree)
+
+// arrange drops the saved positions and falls back to the computed layout
+const beforeArrange = requests.length
+clickButton(tree, 'graphArrange')
+tree = renderPanel()
+await new Promise(resolve => setTimeout(resolve, 25))
+tree = renderPanel()
+const arrangeCall = requests.slice(beforeArrange).find(r => r.path === '/dsh-workbench/api/flow/view/save')
+if (!arrangeCall || arrangeCall.body.arrange !== true) fail('tidy up did not tell the Host to drop positions')
+const rearranged = findNode(tree, n => n.props?.['data-node'] === 'n_src')
+if (rearranged.props.style.left !== '6px') fail('tidy up did not fall back to the computed layout: ' + JSON.stringify(rearranged.props.style))
+mockView.positions = { n_src: { x: 150, y: 36 } }
+console.log('view: saved position honoured | drag follows the pointer and saves | zoom shows and saves | tidy up returns to the computed layout')
 
 // first run on an empty canvas: only the example can make it green, so it must be offered
 canvasEmpty = true
