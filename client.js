@@ -39,7 +39,12 @@ window.__ModuleLoader__.load({
       outcomeRed: 'red — failed', closeSubmit: 'Write close-out', closeBusy: 'Writing…',
       closeDone: 'Close-out written: the injected block now carries the next step.',
       closeFailed: 'Close-out failed.', closeNeedsNext: 'A close-out needs the next first step.',
-      moreLongJobs: 'Long jobs', moreCanvas: 'Canvas', moreHistory: 'Past runs', moreAudit: 'Audit trail',
+      moreLongJobs: 'Long jobs',
+      flowTitle: 'Node graph', flowEmpty: 'No nodes yet — the graph is empty, not broken.',
+      flowGray: 'no executor', flowGreen: 'verified', flowRed: 'failed', flowIdle: 'not run yet',
+      flowNoExecutor: 'unregistered executor', flowBroken: 'Graph refused:',
+      flowRun: 'Run graph', flowVerify: 'Re-check artifacts', flowBusy: 'Running…',
+      flowRan: 'Ran. Verified:', flowRanVerify: 'Re-checked. Verified:', moreCanvas: 'Canvas', moreHistory: 'Past runs', moreAudit: 'Audit trail',
       memoryDecisions: 'Recent decisions', running: 'running',
     }
     const FLOW_ZH = {
@@ -63,7 +68,12 @@ window.__ModuleLoader__.load({
       outcomeRed: '红——失败', closeSubmit: '写入收工', closeBusy: '写入中…',
       closeDone: '已写入收工：注入块里已经带上下一步。',
       closeFailed: '收工写入失败。', closeNeedsNext: '收工必须写下次的第一步。',
-      moreLongJobs: '长活', moreCanvas: '画布', moreHistory: '历史运行', moreAudit: '审计时间线',
+      moreLongJobs: '长活',
+      flowTitle: '节点图', flowEmpty: '画布上还没有节点——这是空，不是坏。',
+      flowGray: '没有 executor', flowGreen: '已验证', flowRed: '失败', flowIdle: '还没跑',
+      flowNoExecutor: '未注册的 executor', flowBroken: '画布被拒：',
+      flowRun: '跑一遍画布', flowVerify: '重验产物', flowBusy: '正在跑…',
+      flowRan: '跑完。已验证：', flowRanVerify: '重验完。已验证：', moreCanvas: '画布', moreHistory: '历史运行', moreAudit: '审计时间线',
       memoryDecisions: '最近判断', running: '运行中',
     }
     const en = {
@@ -217,6 +227,17 @@ window.__ModuleLoader__.load({
       .wb-channel{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:8px}
       .wb-chip[data-channel="sync"]{border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-brand-primary)}
       .wb-details{margin-bottom:12px}
+      .wb-flow-nodes{display:grid;gap:8px}
+      .wb-flow-node{border:1px solid var(--dsw-alias-border-l1);border-radius:10px;padding:8px 10px;background:var(--dsw-alias-bg-base)}
+      .wb-flow-node[data-status="green"]{border-color:color-mix(in srgb,var(--dsw-alias-state-success-primary) 55%,var(--dsw-alias-border-l1))}
+      .wb-flow-node[data-status="red"]{border-color:color-mix(in srgb,var(--dsw-alias-state-error-primary) 55%,var(--dsw-alias-border-l1))}
+      .wb-flow-node[data-status="gray"]{border-style:dashed;opacity:.72}
+      .wb-flow-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
+      .wb-flow-title{font-size:12px;font-weight:700;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+      .wb-flow-meta{margin-top:2px;color:var(--dsw-alias-label-secondary);font-size:10px}
+      .wb-flow-ports{display:flex;align-items:center;gap:6px;margin-top:4px;color:var(--dsw-alias-label-secondary);font:10px ui-monospace,SFMono-Regular,Consolas,monospace}
+      .wb-chip[data-flow="green"]{color:var(--dsw-alias-state-success-primary);border-color:color-mix(in srgb,var(--dsw-alias-state-success-primary) 45%,var(--dsw-alias-border-l1))}
+      .wb-chip[data-flow="red"]{color:var(--dsw-alias-state-error-primary);border-color:color-mix(in srgb,var(--dsw-alias-state-error-primary) 45%,var(--dsw-alias-border-l1))}
       .wb-wrap{max-width:980px;margin:0 auto}
       .wb-bar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}
       .wb-bar-left,.wb-bar-right{display:flex;align-items:center;gap:9px;min-width:0}
@@ -474,6 +495,9 @@ const [momentOverride, setMomentOverride] = React.useState('')
       const [closeDraft, setCloseDraft] = React.useState({ next: '', outcome: 'yellow', decision: '', title: '' })
       const [closeBusy, setCloseBusy] = React.useState(false)
       const [closeNotice, setCloseNotice] = React.useState('')
+      const [flow, setFlow] = React.useState(null)
+      const [flowBusy, setFlowBusy] = React.useState(false)
+      const [flowNotice, setFlowNotice] = React.useState('')
       const prefilled = React.useRef(false)
 
       const applyRuns = React.useCallback(items => {
@@ -551,6 +575,13 @@ const [momentOverride, setMomentOverride] = React.useState('')
               }
             } catch { /* keep previous runs */ }
           }
+          try {
+            const flowResponse = await fetch('/dsh-workbench/api/flow', { cache: 'no-store', credentials: 'same-origin' })
+            if (flowResponse.ok) {
+              const payload = await flowResponse.json()
+              if (payload && payload.ok === true) setFlow(payload)
+            }
+          } catch { /* keep the previous graph */ }
         } catch { setError(true) } finally { setBusy(false) }
       }, [applyRuns])
       React.useEffect(() => { load() }, [load])
@@ -660,6 +691,33 @@ const boundSessionId = String(sessionId || '').trim()
           setMomentNotice(t('memoryActivateDone'))
           await load()
         } catch (failure) { setMomentNotice(String(failure?.message || failure)) }
+      }
+
+      async function runFlowNow() {
+        if (flowBusy) return
+        setFlowBusy(true); setFlowNotice('')
+        try {
+          const result = await postJsonStatus('/dsh-workbench/api/flow/run', { confirm: true })
+          if (!result.ok) { setFlowNotice(String(result.payload?.error || ('HTTP ' + result.status))); return }
+          if (result.payload.flow) setFlow(result.payload.flow)
+          const items = Array.isArray(result.payload.results) ? result.payload.results : []
+          const green = items.filter(item => item.status === 'green').length
+          const gray = items.filter(item => item.status === 'gray').length
+          setFlowNotice(t('flowRan') + ' ' + green + ' / ' + items.length + (gray ? ' · ' + t('flowGray') + ' ' + gray : ''))
+        } catch (failure) { setFlowNotice(String(failure?.message || failure)) } finally { setFlowBusy(false) }
+      }
+
+      async function verifyFlowRun() {
+        if (flowBusy) return
+        setFlowBusy(true); setFlowNotice('')
+        try {
+          const result = await postJsonStatus('/dsh-workbench/api/flow/verify', {})
+          if (!result.ok) { setFlowNotice(String(result.payload?.error || ('HTTP ' + result.status))); return }
+          if (result.payload.flow) setFlow(result.payload.flow)
+          const items = Array.isArray(result.payload.results) ? result.payload.results : []
+          const green = items.filter(item => item.status === 'green').length
+          setFlowNotice(t('flowRanVerify') + ' ' + green + ' / ' + items.length)
+        } catch (failure) { setFlowNotice(String(failure?.message || failure)) } finally { setFlowBusy(false) }
       }
 
       const latestRun = runs[0] || null
@@ -1319,7 +1377,47 @@ const momentButton = (id, label) => h('button', {
                 plainRuns.length > 3 && h('div', { className: 'wb-note' }, String(t('canvasMoreRuns')).replace('{n}', String(plainRuns.length - 3))))))
           : null)
 
-const memoryCard = h('section', { className: 'wb-card wb-memory' },
+      const flowChip = status => h('span', {
+        className: 'wb-chip', 'data-flow': status,
+      }, status === 'green' ? t('flowGreen') : status === 'gray' ? t('flowGray') : status === 'red' ? t('flowRed') : t('flowIdle'))
+
+      // The graph is painted from the Host's own validation: a node with no
+      // executor is gray even if someone typed a nice title, and a broken edge
+      // is shown with the reason instead of being drawn as if it worked.
+      const flowView = h('section', { className: 'wb-card wb-flow' },
+        h('div', { className: 'wb-card-head' },
+          h('h2', { style: { margin: 0 } }, t('flowTitle')),
+          h('span', { className: 'wb-note' }, flow ? String(flow.nodes.length) + ' 节点 · ' + String(flow.edges.length) + ' 边' : '—')),
+        flow && flow.nodes.length
+          ? h('div', { className: 'wb-flow-nodes' }, flow.nodes.map(node => h('div', {
+            key: node.id, className: 'wb-flow-node', 'data-status': node.runtime?.status || 'idle',
+          },
+            h('div', { className: 'wb-flow-head' },
+              h('span', { className: 'wb-flow-title' }, String(node.title || node.id)),
+              flowChip(node.runtime?.status || 'idle')),
+            h('div', { className: 'wb-flow-meta' }, node.runtime?.executorLabel || t('flowNoExecutor')),
+            h('div', { className: 'wb-flow-ports' },
+              h('span', null, (node.inputs || []).map(port => port.type).join(' / ') || '—'),
+              h('span', null, '→'),
+              h('span', null, (node.outputs || []).map(port => port.type).join(' / ') || '—')),
+            node.runtime?.note ? h('div', { className: 'wb-note' }, node.runtime.note) : null,
+            (node.issues || []).length ? h('div', { className: 'wb-note wb-warn-note' }, node.issues.join(' · ')) : null)))
+          : h('div', { className: 'wb-note' }, t('flowEmpty')),
+        flow && flow.validation && flow.validation.ok === false
+          ? h('div', { className: 'wb-note wb-warn-note' }, t('flowBroken') + ' ' + (flow.validation.issues || []).map(issue => issue.message).join('；'))
+          : null,
+        flowNotice ? h('div', { className: 'wb-note' }, flowNotice) : null,
+        h('div', { className: 'wb-actions', style: { justifyContent: 'flex-end' } },
+          h('button', {
+            className: 'wb-button', type: 'button', onClick: verifyFlowRun,
+            disabled: flowBusy || !flow || !flow.nodes.length,
+          }, t('flowVerify')),
+          h('button', {
+            className: 'wb-button wb-button-primary', type: 'button', onClick: runFlowNow,
+            disabled: flowBusy || !flow || !flow.validation || flow.validation.ok !== true,
+          }, flowBusy ? t('flowBusy') : t('flowRun'))))
+
+      const memoryCard = h('section', { className: 'wb-card wb-memory' },
         h('div', { className: 'wb-card-head' },
           h('h2', { style: { margin: 0 } }, t('memoryTitle')),
           memoryPayload?.name ? h('span', { className: 'wb-chip' }, String(memoryPayload.name)) : null),
@@ -1429,7 +1527,7 @@ const memoryCard = h('section', { className: 'wb-card wb-memory' },
       const workBody = h('div', null,
         liveCard,
         runCard,
-        h('details', { className: 'wb-prompt wb-details' }, h('summary', null, t('moreCanvas')), canvasView))
+        h('details', { className: 'wb-prompt wb-details' }, h('summary', null, t('moreCanvas')), h('div', null, flowView, canvasView)))
 
       const closeBody = h('div', null,
         closeForm,

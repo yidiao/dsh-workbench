@@ -1,7 +1,7 @@
 {
   "name": "dsh-workbench",
-  "version": "0.10.0",
-  "description": "Workbench for DeepSeek Harness: a session-scoped right-sidebar tab with three auto-selected moments (attach / working / close out), per-project memory injected as a generated AGENTS.md block, and two execution channels decided by the host.",
+  "version": "0.11.0",
+  "description": "Workbench for DeepSeek Harness: a session-scoped right-sidebar tab with three auto-selected moments, per-project memory injected as a generated AGENTS.md block, two host-decided execution channels, and a typed node graph whose green is only a verified artifact.",
   "keywords": [
     "deepseek-harness",
     "dsh",

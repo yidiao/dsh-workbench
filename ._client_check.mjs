@@ -72,6 +72,42 @@ const reports = {
   },
 }
 
+let flowBroken = false
+function graphPayload() {
+  const nodes = [
+    {
+      id: 'n_src', kind: 'source', title: '资料', inputs: [], outputs: [{ name: 'text', type: 'text' }],
+      executor: { kind: 'text', params: { content: '资料正文' } }, verifier: { kind: 'file-contains', contains: '资料' },
+      runtime: { executor: 'text', executorLabel: '模板拼装（本地，真跑）', available: true, status: 'green', artifact: 'flow-out/n_src.md', note: 'n_src.md', checkedAt: '2026-11-06T12:00:00.000Z' },
+      issues: [], blocked: false,
+    },
+    {
+      id: 'n_cover', kind: 'media', title: '封面图', inputs: [{ name: 'prompt', type: 'text' }], outputs: [{ name: 'image', type: 'image' }],
+      executor: { kind: 'image', params: {} }, verifier: { kind: 'file-exists', path: 'cover.png' },
+      runtime: { executor: 'image', executorLabel: '模型生图（v1.1 桥，未接）', available: false, status: 'gray', artifact: '', note: '没有 executor：这个节点在 v1.0 里跑不了。', checkedAt: '' },
+      issues: [], blocked: false,
+    },
+  ]
+  return {
+    ok: true,
+    version: 1,
+    nodes,
+    edges: [{ id: 'e_1', from: { node: 'n_src', port: 'text' }, to: { node: 'n_cover', port: 'prompt' }, valid: true }],
+    validation: {
+      ok: !flowBroken,
+      issues: flowBroken ? [{ code: 'type-mismatch', edgeId: 'e_2', message: '资料.text 产出 file，而 文本.input 需要 text' }] : [],
+      order: ['n_src', 'n_cover'],
+    },
+    order: ['n_src', 'n_cover'],
+    executors: [
+      { kind: 'text', label: '模板拼装（本地，真跑）', available: true },
+      { kind: 'image', label: '模型生图（v1.1 桥，未接）', available: false },
+    ],
+    verifiers: ['file-exists', 'file-contains'],
+    fetchedAt: '2026-11-06T12:00:00.000Z',
+  }
+}
+
 function statePayload() {
   return {
     ok: true,
@@ -193,6 +229,22 @@ globalThis.fetch = async (raw, options) => {
     agents: { ok: true, bytes: 900 }, gap: { open: false },
   })
   if (path === '/dsh-workbench/api/memory') return ok({ ok: true, active: 'abc123', memory: statePayload().memory.memory })
+  if (path === '/dsh-workbench/api/flow') return ok(graphPayload())
+  if (path === '/dsh-workbench/api/flow/run') {
+    const payload = graphPayload()
+    payload.nodes[0].runtime.status = 'green'
+    return ok({
+      ok: true,
+      results: [
+        { nodeId: 'n_src', status: 'green', artifact: 'flow-out/n_src.md' },
+        { nodeId: 'n_cover', status: 'gray', artifact: '' },
+      ],
+      flow: payload,
+    })
+  }
+  if (path === '/dsh-workbench/api/flow/verify') {
+    return ok({ ok: true, results: [{ nodeId: 'n_src', status: 'green' }], flow: graphPayload() })
+  }
   if (path === '/dsh-workbench/api/dispatch') {
     return ok({
       ok: true, dryRun: body?.dryRun === true, available: true, executionEnabled: true,
@@ -320,6 +372,26 @@ await new Promise(resolve => setTimeout(resolve, 25))
 tree = renderPanel()
 console.log('LIVE-PATH', JSON.stringify(findAll(tree, n => n.props?.className === 'wb-live').length), JSON.stringify(requests.filter(r => r.path === '/dsh-workbench/api/live').length))
 if (!includesText(tree, '当前会话的最后一段回复。')) fail('live reply not available', tree)
+// the graph is painted from the Host's validation, colours included
+if (!findClass(tree, 'wb-flow')) fail('working moment did not paint the node graph', tree)
+if (!findText(tree, '资料') || !findText(tree, '封面图')) fail('graph nodes missing from the canvas', tree)
+const greenNode = findNode(tree, n => String(n.props?.className || '').includes('wb-flow-node') && n.props?.['data-status'] === 'green')
+if (!greenNode) fail('verified node is not painted green', tree)
+const grayNode = findNode(tree, n => String(n.props?.className || '').includes('wb-flow-node') && n.props?.['data-status'] === 'gray')
+if (!grayNode) fail('a node without an executor must stay gray', tree)
+if (!includesText(grayNode, '没有 executor')) fail('gray node does not say why it cannot run', tree)
+const runGraphButton = findNode(tree, n => n.type === 'button' && findText(n.props?.children, 'flowRun'))
+if (!runGraphButton) fail('no run-graph button', tree)
+if (runGraphButton.props.disabled) fail('a valid graph should be runnable')
+const beforeGraphRun = requests.length
+runGraphButton.props.onClick()
+tree = renderPanel()
+await new Promise(resolve => setTimeout(resolve, 30))
+tree = renderPanel()
+const graphRunCall = requests.slice(beforeGraphRun).find(r => r.path === '/dsh-workbench/api/flow/run')
+if (!graphRunCall) fail('run graph did not call the run route')
+if (graphRunCall.body.confirm !== true) fail('the graph ran without explicit confirm: ' + JSON.stringify(graphRunCall.body))
+if (!includesText(tree, 'flowRan')) fail('graph run result not reported', tree)
 if (findClass(tree, 'wb-sync')) fail('attach form leaked into the working moment', tree)
 if (findClass(tree, 'wb-close')) fail('close form leaked into the working moment', tree)
 console.log('moment: live run → working, orphan flagged, live session painted, other moments absent')
@@ -397,6 +469,7 @@ insertOne.props.onClick()
 tree = renderPanel()
 const goalFromModule = findNode(tree, n => n.type === 'input' && n.props?.id === 'wb-goal')
 if (!String(goalFromModule.props.value).includes('统计 md 行数并给出 top3')) fail('module did not fill the goal slot', tree)
+console.log('graph: verified green, no-executor gray, run carries confirm:true, refused graph cannot run')
 console.log('composer: template fills the slots, module insertion still works')
 
 // --- 5. close-out: one form, one write ------------------------------------
@@ -460,6 +533,21 @@ tree = await remount('')
 if (!includesText(tree, 'sessionMissing')) fail('a panel without a session must say so', tree)
 const orphanSync = findNode(tree, n => n.type === 'button' && findText(n.props?.children, 'syncGo'))
 if (!orphanSync?.props.disabled) fail('sync must be disabled without a session')
+// a graph the Host refused cannot be run, and the reason is on screen
+sessionRunning = true
+flowBroken = true
+tree = await remount()
+if (activeMoment(tree) !== 'work') fail('a live run must still open the working moment with a broken graph')
+const brokenButton = findNode(tree, n => n.type === 'button' && findText(n.props?.children, 'flowRun'))
+if (!brokenButton) fail('graph section vanished on a broken graph', tree)
+if (!brokenButton.props.disabled) fail('a refused graph still offered a run button', tree)
+if (!findClass(tree, 'wb-warn-note')) fail('the refused edge reason is not on screen', tree)
+flowBroken = false
+sessionRunning = false
+// remount again so the live-poll interval from the working moment is cleaned up
+tree = await remount()
+
 console.log('moment: gap → close out, closed → attach; no session disables sync and says why')
+console.log('graph: a refused graph cannot be run and shows the edge reason')
 
 console.log('\nCLIENT HARNESS PASS')

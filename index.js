@@ -79,6 +79,13 @@ const CHANNEL_API_PATH = '/dsh-workbench/api/channel'
 const SYNC_API_PATH = '/dsh-workbench/api/sync'
 const LIVE_API_PATH = '/dsh-workbench/api/live'
 const CLOSE_API_PATH = '/dsh-workbench/api/close'
+const FLOW_API_PATH = '/dsh-workbench/api/flow'
+const FLOW_NODE_API_PATH = '/dsh-workbench/api/flow/node'
+const FLOW_NODE_DELETE_API_PATH = '/dsh-workbench/api/flow/node/delete'
+const FLOW_EDGE_API_PATH = '/dsh-workbench/api/flow/edge'
+const FLOW_EDGE_DELETE_API_PATH = '/dsh-workbench/api/flow/edge/delete'
+const FLOW_RUN_API_PATH = '/dsh-workbench/api/flow/run'
+const FLOW_VERIFY_API_PATH = '/dsh-workbench/api/flow/verify'
 const MODELS_API_PATH = '/dsh-workbench/api/models'
 const STATE_EDIT_API_PATH = '/dsh-workbench/api/state-edit'
 const DECISION_API_PATH = '/dsh-workbench/api/decision-add'
@@ -1163,6 +1170,313 @@ function statePayload(ctx) {
   }
 }
 
+// ---- v1.0: the node graph ---------------------------------------------------
+//
+// A node is a quintuple — kind, typed inputs, typed outputs, executor, verifier.
+// The registry is the only thing that decides whether a node may run: a kind
+// that is not registered has no executor, so the node is gray and refuses to
+// run. That rule exists because a green node that never executed is fake green,
+// and the whole point of the canvas is that its colours can be trusted.
+//
+// v1.0 ships one real executor (local template assembly). Model bridges — text
+// via LLM, image, video — are declared but unregistered on purpose: the panel
+// then shows exactly which nodes need the v1.1 bridge instead of pretending.
+
+const FLOW = join(WB_DIR, 'flow.json')
+const FLOW_OUT = join(WB_DIR, 'flow-out')
+const MAX_FLOW_NODES = 40
+const MAX_FLOW_EDGES = 80
+const PORT_TYPES = new Set(['text', 'file', 'image', 'json', 'any'])
+const VERIFIER_KINDS = new Set(['file-exists', 'file-contains'])
+
+const EXECUTOR_KINDS = {
+  text: { label: '模板拼装（本地，真跑）', available: true },
+  llm: { label: '模型生文（v1.1 桥，未接）', available: false },
+  image: { label: '模型生图（v1.1 桥，未接）', available: false },
+  video: { label: '模型生视频（v1.1 桥，未接）', available: false },
+}
+
+function cleanFlowText(value, max) {
+  return String(value ?? '').replace(/[\u0000-\u001f]/g, ' ').trim().slice(0, max)
+}
+
+function readFlow() {
+  const raw = readJsonSafe(FLOW, null)
+  return {
+    version: 1,
+    nodes: Array.isArray(raw?.nodes) ? raw.nodes.filter(node => node && typeof node === 'object').map(node => ({ ...node })) : [],
+    edges: Array.isArray(raw?.edges) ? raw.edges.filter(edge => edge && typeof edge === 'object').map(edge => ({ ...edge })) : [],
+    state: raw && typeof raw.state === 'object' && raw.state ? { ...raw.state } : {},
+  }
+}
+
+function writeFlow(flow) {
+  ensureDir()
+  const body = { version: 1, nodes: flow.nodes, edges: flow.edges, state: flow.state || {} }
+  writeFileSync(FLOW, JSON.stringify(body, null, 2) + '\n', 'utf-8')
+}
+
+function normaliseFlowPorts(raw, side) {
+  if (!Array.isArray(raw)) return []
+  return raw.slice(0, 8).map((port, index) => {
+    const name = cleanFlowText(port?.name, 40) || side + (index + 1)
+    const type = cleanFlowText(port?.type, 20)
+    return { name, type: PORT_TYPES.has(type) ? type : 'text' }
+  })
+}
+
+function normaliseExecutorParams(kind, params) {
+  if (!params || typeof params !== 'object') return {}
+  if (kind === 'text') {
+    return {
+      content: String(params.content ?? '').slice(0, 8000),
+      template: String(params.template ?? '').slice(0, 4000),
+    }
+  }
+  return {}
+}
+
+function normaliseVerifier(raw) {
+  const kind = cleanFlowText(raw?.kind, 40)
+  if (!VERIFIER_KINDS.has(kind)) return { kind: 'file-exists', path: '' }
+  const verifier = { kind, path: cleanFlowText(raw?.path, 200) }
+  if (kind === 'file-contains') verifier.contains = String(raw?.contains ?? '').slice(0, 200)
+  return verifier
+}
+
+function normaliseFlowNode(raw, existing = null) {
+  const title = cleanFlowText(raw?.title ?? existing?.title, 120) || '未命名节点'
+  const kind = cleanFlowText(raw?.kind ?? existing?.kind, 40) || 'step'
+  const executorKind = cleanFlowText(raw?.executor?.kind ?? existing?.executor?.kind, 40)
+  const params = normaliseExecutorParams(executorKind, raw?.executor?.params !== undefined ? raw.executor.params : existing?.executor?.params)
+  const inputs = normaliseFlowPorts(raw?.inputs !== undefined ? raw.inputs : existing?.inputs, 'in')
+  const outputs = normaliseFlowPorts(raw?.outputs !== undefined ? raw.outputs : existing?.outputs, 'out')
+  const verifier = normaliseVerifier(raw?.verifier !== undefined ? raw.verifier : existing?.verifier)
+  return {
+    id: existing ? existing.id : ('n_' + createHash('sha256').update(title + '|' + kind + '|' + Date.now() + '|' + Math.random()).digest('hex').slice(0, 8)),
+    kind,
+    title,
+    inputs,
+    outputs,
+    executor: { kind: executorKind, params },
+    verifier,
+    updatedAt: new Date().toISOString(),
+  }
+}
+
+function topoOrder(flow) {
+  const ids = flow.nodes.map(node => node.id)
+  const indegree = new Map(ids.map(id => [id, 0]))
+  const outgoing = new Map(ids.map(id => [id, []]))
+  for (const edge of flow.edges) {
+    const from = edge?.from?.node
+    const to = edge?.to?.node
+    if (!indegree.has(from) || !indegree.has(to)) continue
+    indegree.set(to, indegree.get(to) + 1)
+    outgoing.get(from).push(to)
+  }
+  const queue = ids.filter(id => indegree.get(id) === 0)
+  const order = []
+  while (queue.length) {
+    const id = queue.shift()
+    order.push(id)
+    for (const next of outgoing.get(id)) {
+      indegree.set(next, indegree.get(next) - 1)
+      if (indegree.get(next) === 0) queue.push(next)
+    }
+  }
+  return order.length === ids.length ? order : null
+}
+
+function validateFlow(flow) {
+  const issues = []
+  const byId = new Map()
+  for (const node of flow.nodes) {
+    if (byId.has(node.id)) issues.push({ code: 'duplicate-node', nodeId: node.id, message: '节点 id 重复：' + node.id })
+    byId.set(node.id, node)
+    if (!EXECUTOR_KINDS[node.executor?.kind]) {
+      issues.push({ code: 'unknown-executor', nodeId: node.id, message: '未注册的 executor：' + String(node.executor?.kind || '（空）') })
+    }
+    if (!VERIFIER_KINDS.has(node.verifier?.kind)) {
+      issues.push({ code: 'unknown-verifier', nodeId: node.id, message: '未注册的 verifier：' + String(node.verifier?.kind || '（空）') })
+    }
+    for (const port of node.inputs || []) {
+      if (!PORT_TYPES.has(port.type)) issues.push({ code: 'unknown-port-type', nodeId: node.id, message: '端口类型未知：' + port.type })
+    }
+    for (const port of node.outputs || []) {
+      if (!PORT_TYPES.has(port.type)) issues.push({ code: 'unknown-port-type', nodeId: node.id, message: '端口类型未知：' + port.type })
+    }
+  }
+  const boundInputs = new Map()
+  for (const edge of flow.edges) {
+    const from = byId.get(edge?.from?.node)
+    const to = byId.get(edge?.to?.node)
+    if (!from || !to) {
+      issues.push({ code: 'unknown-endpoint', edgeId: edge.id || '', message: '边的端点不在画布上' })
+      continue
+    }
+    const outPort = (from.outputs || []).find(port => port.name === edge.from.port)
+    const inPort = (to.inputs || []).find(port => port.name === edge.to.port)
+    if (!outPort || !inPort) {
+      issues.push({ code: 'unknown-port', edgeId: edge.id || '', message: '边的端口不存在：' + String(edge.from.port || '?') + ' → ' + String(edge.to.port || '?') })
+      continue
+    }
+    const compatible = outPort.type === inPort.type || outPort.type === 'any' || inPort.type === 'any'
+    if (!compatible) {
+      issues.push({
+        code: 'type-mismatch', edgeId: edge.id || '',
+        message: (from.title || from.id) + '.' + outPort.name + ' 产出 ' + outPort.type + '，而 ' + (to.title || to.id) + '.' + inPort.name + ' 需要 ' + inPort.type,
+      })
+    }
+    const key = to.id + ':' + inPort.name
+    if (boundInputs.has(key)) {
+      issues.push({ code: 'input-bound-twice', edgeId: edge.id || '', message: (to.title || to.id) + '.' + inPort.name + ' 被两条边同时接上' })
+    }
+    boundInputs.set(key, edge)
+    if (from.id === to.id) issues.push({ code: 'self-loop', edgeId: edge.id || '', message: '节点不能接回自己' })
+  }
+  const order = topoOrder(flow)
+  if (!order) issues.push({ code: 'cycle', message: '这些边形成了环，画布无法排序执行' })
+  return { ok: issues.length === 0, issues, order: order || [] }
+}
+
+function flowNodeRuntime(node, flow) {
+  const registered = EXECUTOR_KINDS[node.executor?.kind]
+  const available = Boolean(registered && registered.available)
+  const record = flow.state?.[node.id] || null
+  return {
+    executor: node.executor?.kind || '',
+    executorLabel: registered?.label || '未知 executor',
+    available,
+    status: available ? String(record?.status || 'idle') : 'gray',
+    artifact: String(record?.artifact || ''),
+    note: available ? String(record?.note || '') : '没有 executor：这个节点在 v1.0 里跑不了。',
+    checkedAt: String(record?.checkedAt || ''),
+  }
+}
+
+function flowPayload(flow) {
+  const validation = validateFlow(flow)
+  const badEdges = new Set(validation.issues.map(issue => issue.edgeId).filter(Boolean))
+  const badNodes = new Set(validation.issues.map(issue => issue.nodeId).filter(Boolean))
+  return {
+    ok: true,
+    version: 1,
+    nodes: flow.nodes.map(node => ({
+      ...node,
+      runtime: flowNodeRuntime(node, flow),
+      issues: validation.issues.filter(issue => issue.nodeId === node.id).map(issue => issue.message),
+      blocked: badNodes.has(node.id),
+    })),
+    edges: flow.edges.map(edge => ({ ...edge, valid: !badEdges.has(edge.id) })),
+    validation,
+    order: validation.order,
+    executors: Object.entries(EXECUTOR_KINDS).map(([kind, value]) => ({ kind, label: value.label, available: value.available })),
+    verifiers: [...VERIFIER_KINDS],
+    fetchedAt: new Date().toISOString(),
+  }
+}
+
+function flowArtifactPath(candidate) {
+  const target = resolve(FLOW_OUT, candidate || '')
+  const rel = relative(FLOW_OUT, target)
+  if (!rel || rel.startsWith('..') || isAbsolute(rel)) return ''
+  return target
+}
+
+function verifyFlowArtifact(node, artifact) {
+  const verifier = node.verifier || { kind: 'file-exists' }
+  const path = flowArtifactPath(verifier.path) || artifact
+  if (!path) return { status: 'red', note: '没有可验证的产物路径' }
+  let exists = false
+  let bytes = 0
+  try {
+    const info = statSync(path)
+    exists = info.isFile()
+    bytes = info.size
+  } catch { exists = false }
+  if (!exists || bytes === 0) return { status: 'red', note: '产物不存在：' + relative(FLOW_OUT, path) }
+  if (verifier.kind === 'file-contains') {
+    const text = readSafe(path)
+    if (!verifier.contains) return { status: 'red', note: 'file-contains 没有给出要匹配的文字' }
+    if (!text.includes(verifier.contains)) return { status: 'red', note: '产物里找不到「' + verifier.contains + '」' }
+  }
+  return { status: 'green', note: relative(FLOW_OUT, path) }
+}
+
+function resolveUpstreamText(flow, node) {
+  const chunks = []
+  for (const edge of flow.edges) {
+    if (edge?.to?.node !== node.id) continue
+    const source = flow.nodes.find(item => item.id === edge.from.node)
+    const record = source ? flow.state?.[source.id] : null
+    const artifact = record?.artifact ? readSafe(record.artifact) : ''
+    if (artifact.trim()) chunks.push(artifact.trim())
+  }
+  return chunks.join('\n\n')
+}
+
+function executeFlowNode(flow, node) {
+  // Only registered executors reach this function; the caller already refused
+  // gray nodes, so an unknown kind here is a bug, not a user input.
+  if (node.executor.kind === 'text') {
+    const params = node.executor.params || {}
+    const upstream = resolveUpstreamText(flow, node)
+    // A literal node has content and no template; a sink has a template and no
+    // literal. Defaulting to the wrong placeholder would write an empty file and
+    // the verifier would call it red for the wrong reason.
+    const fallback = String(params.content || '') ? '{{content}}' : '{{input}}'
+    const body = String(params.template || fallback)
+      .replace(/\{\{input\}\}/g, upstream)
+      .replace(/\{\{content\}\}/g, String(params.content || ''))
+    mkdirSync(FLOW_OUT, { recursive: true })
+    const artifact = join(FLOW_OUT, node.id + '.md')
+    writeFileSync(artifact, body, 'utf-8')
+    return artifact
+  }
+  return ''
+}
+
+function runFlow(flow) {
+  const validation = validateFlow(flow)
+  if (!validation.ok) return { ok: false, code: 'flow-invalid', validation }
+  const results = []
+  for (const nodeId of validation.order) {
+    const node = flow.nodes.find(item => item.id === nodeId)
+    const runtime = flowNodeRuntime(node, flow)
+    if (!runtime.available) {
+      // Gray stays gray. It is recorded so the canvas can say why, never as a
+      // green that no script and no artifact backed.
+      flow.state[nodeId] = { status: 'gray', artifact: '', note: runtime.note, checkedAt: new Date().toISOString() }
+      results.push({ nodeId, status: 'gray', artifact: '', note: runtime.note })
+      continue
+    }
+    const artifact = executeFlowNode(flow, node)
+    const verified = verifyFlowArtifact(node, artifact)
+    flow.state[nodeId] = { status: verified.status, artifact, note: verified.note, checkedAt: new Date().toISOString() }
+    results.push({ nodeId, status: verified.status, artifact, note: verified.note })
+  }
+  writeFlow(flow)
+  return { ok: true, results }
+}
+
+function verifyFlow(flow) {
+  const results = []
+  for (const node of flow.nodes) {
+    const runtime = flowNodeRuntime(node, flow)
+    if (!runtime.available) {
+      results.push({ nodeId: node.id, status: 'gray', note: runtime.note })
+      continue
+    }
+    const record = flow.state?.[node.id] || {}
+    const verified = verifyFlowArtifact(node, record.artifact || '')
+    flow.state[node.id] = { status: verified.status, artifact: record.artifact || '', note: verified.note, checkedAt: new Date().toISOString() }
+    results.push({ nodeId: node.id, status: verified.status, note: verified.note })
+  }
+  writeFlow(flow)
+  return { ok: true, results }
+}
+
 // ---- v0.6: reusable modules, session targeting, derived reports -------------
 //
 // The panel must not hand raw event streams to a human. These helpers turn the
@@ -1630,6 +1944,190 @@ export async function apply(ctx) {
       })
     },
   }))
+
+// ---- v1.0 node graph routes ----------------------------------------------
+  // Read the whole graph: nodes with their runtime colour, edges with their
+  // validity, the executor registry, and the validation issues. This is what the
+  // canvas paints, so it must never invent a node or an edge.
+  disposers.push(ctx.webServer.register({
+    kind: 'exact',
+    path: FLOW_API_PATH,
+    handler: async (req, res) => {
+      if (!guard(req, res, 'GET')) return
+      sendJson(res, 200, flowPayload(readFlow()))
+    },
+  }))
+
+  disposers.push(ctx.webServer.register({
+    kind: 'exact',
+    path: FLOW_NODE_API_PATH,
+    handler: async (req, res) => {
+      if (!guard(req, res, 'POST')) return
+      const body = await readJsonBody(req)
+      if (body.tooLarge) { sendJson(res, 413, { ok: false, error: '请求体过大' }); return }
+      if (body.error) { sendJson(res, 400, { ok: false, error: '请求体不是合法 JSON 对象' }); return }
+      const input = body.json
+      const flow = readFlow()
+      const id = cleanFlowText(input.id, 40)
+      const existing = id ? flow.nodes.find(node => node.id === id) : null
+      if (id && !existing) { sendJson(res, 404, { ok: false, error: '没有这个节点' }); return }
+      if (!existing && flow.nodes.length >= MAX_FLOW_NODES) {
+        sendJson(res, 409, { ok: false, error: '节点数已达上限 ' + MAX_FLOW_NODES })
+        return
+      }
+      if (!cleanFlowText(input.title, 120) && !existing) {
+        sendJson(res, 400, { ok: false, error: '节点需要标题' })
+        return
+      }
+      const node = normaliseFlowNode(input, existing)
+      if (existing) {
+        flow.nodes = flow.nodes.map(item => (item.id === node.id ? node : item))
+      } else {
+        flow.nodes.push(node)
+      }
+      const validation = validateFlow(flow)
+      if (!validation.ok && !existing) {
+        // A new node that already breaks the graph is refused rather than saved
+        // in a state the user has to debug later.
+        const fatal = validation.issues.filter(issue => issue.nodeId === node.id)
+        if (fatal.length) { sendJson(res, 409, { ok: false, code: 'node-rejected', issues: fatal }); return }
+      }
+      writeFlow(flow)
+      appendAudit({
+        action: existing ? 'flow.node.update' : 'flow.node',
+        requestId: requestId(input.requestId),
+        summary: node.title + ' · ' + (node.executor.kind || '无 executor') + ' · ' + (node.verifier.kind || '无 verifier'),
+      })
+      sendJson(res, 200, flowPayload(flow))
+    },
+  }))
+
+  disposers.push(ctx.webServer.register({
+    kind: 'exact',
+    path: FLOW_NODE_DELETE_API_PATH,
+    handler: async (req, res) => {
+      if (!guard(req, res, 'POST')) return
+      const body = await readJsonBody(req)
+      if (body.tooLarge) { sendJson(res, 413, { ok: false, error: '请求体过大' }); return }
+      if (body.error) { sendJson(res, 400, { ok: false, error: '请求体不是合法 JSON 对象' }); return }
+      const id = cleanFlowText(body.json.id, 40)
+      const flow = readFlow()
+      const node = flow.nodes.find(item => item.id === id)
+      if (!node) { sendJson(res, 404, { ok: false, error: '没有这个节点' }); return }
+      flow.nodes = flow.nodes.filter(item => item.id !== id)
+      flow.edges = flow.edges.filter(edge => edge.from?.node !== id && edge.to?.node !== id)
+      delete flow.state[id]
+      writeFlow(flow)
+      appendAudit({ action: 'flow.node.delete', requestId: requestId(body.json.requestId), summary: node.title })
+      sendJson(res, 200, flowPayload(flow))
+    },
+  }))
+
+  // The one place an illegal edge can be refused. Type compatibility is checked
+  // against the declared ports; a cycle, a double-bound input and a self-loop are
+  // refused for the same reason: execution would have no honest order.
+  disposers.push(ctx.webServer.register({
+    kind: 'exact',
+    path: FLOW_EDGE_API_PATH,
+    handler: async (req, res) => {
+      if (!guard(req, res, 'POST')) return
+      const body = await readJsonBody(req)
+      if (body.tooLarge) { sendJson(res, 413, { ok: false, error: '请求体过大' }); return }
+      if (body.error) { sendJson(res, 400, { ok: false, error: '请求体不是合法 JSON 对象' }); return }
+      const input = body.json
+      const fromNode = cleanFlowText(input.fromNode, 40)
+      const fromPort = cleanFlowText(input.fromPort, 40)
+      const toNode = cleanFlowText(input.toNode, 40)
+      const toPort = cleanFlowText(input.toPort, 40)
+      if (!fromNode || !fromPort || !toNode || !toPort) {
+        sendJson(res, 400, { ok: false, error: '一条边需要 fromNode/fromPort/toNode/toPort' })
+        return
+      }
+      const flow = readFlow()
+      if (flow.edges.length >= MAX_FLOW_EDGES) { sendJson(res, 409, { ok: false, error: '边数已达上限 ' + MAX_FLOW_EDGES }); return }
+      const edge = { id: 'e_' + createHash('sha256').update(fromNode + '>'.repeat(1) + fromPort + '|' + toNode + '|' + toPort).digest('hex').slice(0, 8), from: { node: fromNode, port: fromPort }, to: { node: toNode, port: toPort } }
+      const candidate = { ...flow, edges: flow.edges.concat([edge]) }
+      const before = validateFlow(flow)
+      const validation = validateFlow(candidate)
+      // Reject anything this edge newly broke. A cycle names no single edge, so
+      // comparing against the previous validation is the only honest test.
+      const keyOf = issue => [issue.code, issue.edgeId || '', issue.nodeId || '', issue.message || ''].join('|')
+      const known = new Set(before.issues.map(keyOf))
+      const introduced = validation.issues.filter(issue => !known.has(keyOf(issue)))
+      if (introduced.length) {
+        sendJson(res, 409, { ok: false, code: 'edge-rejected', issues: introduced, edge })
+        return
+      }
+      writeFlow(candidate)
+      appendAudit({ action: 'flow.edge', requestId: requestId(input.requestId), summary: fromNode + '.' + fromPort + ' → ' + toNode + '.' + toPort })
+      sendJson(res, 200, flowPayload(candidate))
+    },
+  }))
+
+  disposers.push(ctx.webServer.register({
+    kind: 'exact',
+    path: FLOW_EDGE_DELETE_API_PATH,
+    handler: async (req, res) => {
+      if (!guard(req, res, 'POST')) return
+      const body = await readJsonBody(req)
+      if (body.tooLarge) { sendJson(res, 413, { ok: false, error: '请求体过大' }); return }
+      if (body.error) { sendJson(res, 400, { ok: false, error: '请求体不是合法 JSON 对象' }); return }
+      const id = cleanFlowText(body.json.id, 60)
+      const flow = readFlow()
+      if (!flow.edges.some(edge => edge.id === id)) { sendJson(res, 404, { ok: false, error: '没有这条边' }); return }
+      flow.edges = flow.edges.filter(edge => edge.id !== id)
+      writeFlow(flow)
+      appendAudit({ action: 'flow.edge.delete', requestId: requestId(body.json.requestId), summary: id })
+      sendJson(res, 200, flowPayload(flow))
+    },
+  }))
+
+  // Execution is explicit (confirm:true) and refuses an invalid graph. Gray nodes
+  // are recorded as gray; green requires a verifier pass on an artifact that is
+  // really on disk.
+  disposers.push(ctx.webServer.register({
+    kind: 'exact',
+    path: FLOW_RUN_API_PATH,
+    handler: async (req, res) => {
+      if (!guard(req, res, 'POST')) return
+      const body = await readJsonBody(req)
+      if (body.tooLarge) { sendJson(res, 413, { ok: false, error: '请求体过大' }); return }
+      if (body.error) { sendJson(res, 400, { ok: false, error: '请求体不是合法 JSON 对象' }); return }
+      const input = body.json
+      if (input.confirm !== true) {
+        sendJson(res, 400, { ok: false, error: '需要确认：带 confirm:true 才会真跑画布' })
+        return
+      }
+      const flow = readFlow()
+      const result = runFlow(flow)
+      if (!result.ok) { sendJson(res, 409, { ok: false, code: result.code, validation: result.validation }); return }
+      const green = result.results.filter(item => item.status === 'green').length
+      const gray = result.results.filter(item => item.status === 'gray').length
+      appendAudit({
+        action: 'flow.run',
+        requestId: requestId(input.requestId),
+        summary: result.results.length + ' 个节点 · 绿 ' + green + ' · 灰 ' + gray,
+      })
+      sendJson(res, 200, { ok: true, results: result.results, flow: flowPayload(readFlow()) })
+    },
+  }))
+
+  disposers.push(ctx.webServer.register({
+    kind: 'exact',
+    path: FLOW_VERIFY_API_PATH,
+    handler: async (req, res) => {
+      if (!guard(req, res, 'POST')) return
+      const body = await readJsonBody(req)
+      if (body.tooLarge) { sendJson(res, 413, { ok: false, error: '请求体过大' }); return }
+      if (body.error) { sendJson(res, 400, { ok: false, error: '请求体不是合法 JSON 对象' }); return }
+      const flow = readFlow()
+      const result = verifyFlow(flow)
+      appendAudit({ action: 'flow.verify', requestId: requestId(body.json.requestId), summary: result.results.map(item => item.nodeId + ':' + item.status).join(' ') })
+      sendJson(res, 200, { ok: true, results: result.results, flow: flowPayload(readFlow()) })
+    },
+  }))
+
+  // Model catalog is read-only: it exposes whatever the profile's llm service
 
   // Model catalog is read-only: it exposes whatever the profile's llm service
   // reports so the selector can list the user's real routes, and it never

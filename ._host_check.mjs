@@ -5,7 +5,7 @@
 
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, realpathSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, realpathSync, rmSync, existsSync } from 'node:fs'
 
 const here = new URL('.', import.meta.url)
 const indexUrl = new URL('./index.js', here)
@@ -1043,6 +1043,178 @@ if (closedRecord.decisions[closedRecord.decisions.length - 1].title !== '面板�
 const closedAgents = readFileSync(join(tempWorkspace, 'AGENTS.md'), 'utf8')
 if (!closedAgents.includes('重启后按清单验收')) fail('close did not regenerate the injected block')
 console.log('flow: short→sync, generation→async, minutes→async, leaving→async | sync queues into the current session | live running/idle | close writes one record')
+
+// --- v1.0 node graph: typed ports, refused edges, real artifacts ------------
+const flowRoute = registered.find(r => r.regType === 'web' && r.path === '/dsh-workbench/api/flow')
+const nodeRoute = registered.find(r => r.regType === 'web' && r.path === '/dsh-workbench/api/flow/node')
+const nodeDeleteRoute = registered.find(r => r.regType === 'web' && r.path === '/dsh-workbench/api/flow/node/delete')
+const edgeRoute = registered.find(r => r.regType === 'web' && r.path === '/dsh-workbench/api/flow/edge')
+const edgeDeleteRoute = registered.find(r => r.regType === 'web' && r.path === '/dsh-workbench/api/flow/edge/delete')
+const runRoute = registered.find(r => r.regType === 'web' && r.path === '/dsh-workbench/api/flow/run')
+const verifyRoute = registered.find(r => r.regType === 'web' && r.path === '/dsh-workbench/api/flow/verify')
+if (!flowRoute || !nodeRoute || !nodeDeleteRoute || !edgeRoute || !edgeDeleteRoute || !runRoute || !verifyRoute) {
+  fail('node graph routes missing')
+}
+
+const emptyFlowRes = response()
+await flowRoute.handler(getReq(flowRoute.path), emptyFlowRes)
+if (emptyFlowRes.statusCode !== 200) fail('flow read status ' + emptyFlowRes.statusCode + ' ' + emptyFlowRes.body)
+const emptyFlow = JSON.parse(emptyFlowRes.body)
+if (emptyFlow.nodes.length !== 0 || emptyFlow.edges.length !== 0) fail('a fresh graph must be empty')
+if (!emptyFlow.executors.some(item => item.kind === 'text' && item.available === true)) fail('text executor not registered')
+if (!emptyFlow.executors.some(item => item.kind === 'image' && item.available === false)) fail('image executor should be unregistered (gray)')
+
+// node A: the material, produced locally and verified by matching text
+const makeNode = async payload => {
+  const res = response()
+  await nodeRoute.handler(postReq(nodeRoute.path, payload), res)
+  return { res, payload: res.statusCode === 200 ? JSON.parse(res.body) : null }
+}
+
+const sourceMade = await makeNode({
+  title: '资料',
+  kind: 'source',
+  inputs: [],
+  outputs: [{ name: 'text', type: 'text' }],
+  executor: { kind: 'text', params: { content: '资料：画布必须先有类型，再有执行。' } },
+  verifier: { kind: 'file-contains', path: '', contains: '画布必须先有类型' },
+})
+if (!sourceMade.payload) fail('source node rejected: ' + sourceMade.res.body)
+const sourceNode = sourceMade.payload.nodes.find(node => node.title === '资料')
+if (!sourceNode || sourceNode.runtime.available !== true) fail('source node not runnable')
+
+// node B: the text, consuming A's output through a typed port
+const textMade = await makeNode({
+  title: '文本',
+  kind: 'sink',
+  inputs: [{ name: 'input', type: 'text' }],
+  outputs: [{ name: 'doc', type: 'file' }],
+  executor: { kind: 'text', params: { template: '# 定稿\n{{input}}\n\n收束：先类型后执行。' } },
+  verifier: { kind: 'file-contains', path: '', contains: '收束：先类型后执行' },
+})
+if (!textMade.payload) fail('text node rejected: ' + textMade.res.body)
+const textNode = textMade.payload.nodes.find(node => node.title === '文本')
+if (!textNode) fail('text node not saved')
+
+const illegalEdges = [
+  [{ fromNode: textNode.id, fromPort: 'doc', toNode: sourceNode.id, toPort: 'text' }, 'file→text'],
+  [{ fromNode: sourceNode.id, fromPort: 'nope', toNode: textNode.id, toPort: 'input' }, 'unknown port'],
+  [{ fromNode: sourceNode.id, fromPort: 'text', toNode: sourceNode.id, toPort: 'text' }, 'self loop'],
+  [{ fromNode: sourceNode.id, fromPort: 'text', toNode: 'n_missing', toPort: 'input' }, 'unknown node'],
+]
+for (const [payload, label] of illegalEdges) {
+  const res = response()
+  await edgeRoute.handler(postReq(edgeRoute.path, payload), res)
+  if (res.statusCode !== 409 || JSON.parse(res.body).code !== 'edge-rejected') {
+    fail('illegal edge accepted (' + label + '): ' + res.statusCode + ' ' + res.body)
+  }
+}
+
+const noConfirmRes = response()
+await runRoute.handler(postReq(runRoute.path, {}), noConfirmRes)
+if (noConfirmRes.statusCode !== 400) fail('flow ran without confirm:true')
+
+const legalEdgeRes = response()
+await edgeRoute.handler(postReq(edgeRoute.path, { fromNode: sourceNode.id, fromPort: 'text', toNode: textNode.id, toPort: 'input' }), legalEdgeRes)
+if (legalEdgeRes.statusCode !== 200) fail('legal edge refused: ' + legalEdgeRes.statusCode + ' ' + legalEdgeRes.body)
+const afterEdge = JSON.parse(legalEdgeRes.body)
+if (afterEdge.edges.length !== 1 || afterEdge.validation.ok !== true) fail('legal edge not stored cleanly: ' + legalEdgeRes.body)
+
+// a second edge into the same input is refused
+const duplicateEdgeRes = response()
+await edgeRoute.handler(postReq(edgeRoute.path, { fromNode: textNode.id, fromPort: 'doc', toNode: textNode.id, toPort: 'input' }), duplicateEdgeRes)
+if (duplicateEdgeRes.statusCode !== 409) fail('double-bound input accepted')
+
+// a cycle is refused: give the source node an input port, then point B at A
+const sourceWithInput = await makeNode({
+  id: sourceNode.id,
+  inputs: [{ name: 'loop', type: 'file' }],
+})
+if (!sourceWithInput.payload) fail('source node update rejected: ' + sourceWithInput.res.body)
+const cycleRes = response()
+await edgeRoute.handler(postReq(edgeRoute.path, { fromNode: textNode.id, fromPort: 'doc', toNode: sourceNode.id, toPort: 'loop' }), cycleRes)
+if (cycleRes.statusCode !== 409 || !JSON.parse(cycleRes.body).issues.some(issue => issue.code === 'cycle')) {
+  fail('cycle accepted: ' + cycleRes.statusCode + ' ' + cycleRes.body)
+}
+
+const flowRunRes = response()
+await runRoute.handler(postReq(runRoute.path, { confirm: true, requestId: 'harness-flow-run-1' }), flowRunRes)
+if (flowRunRes.statusCode !== 200) fail('flow run status ' + flowRunRes.statusCode + ' ' + flowRunRes.body)
+const flowRun = JSON.parse(flowRunRes.body)
+const sourceResult = flowRun.results.find(item => item.nodeId === sourceNode.id)
+const textResult = flowRun.results.find(item => item.nodeId === textNode.id)
+if (sourceResult.status !== 'green' || !sourceResult.artifact) fail('source node did not go green: ' + JSON.stringify(sourceResult))
+if (textResult.status !== 'green') fail('text node did not go green: ' + JSON.stringify(textResult))
+if (!existsSync(sourceResult.artifact)) fail('source artifact missing on disk: ' + sourceResult.artifact)
+const textArtifact = readFileSync(textResult.artifact, 'utf8')
+if (!textArtifact.includes('画布必须先有类型') || !textArtifact.includes('收束：先类型后执行')) {
+  fail('the text node did not consume the upstream artifact: ' + JSON.stringify(textArtifact.slice(0, 120)))
+}
+
+// a node with a verifier that cannot pass must be red, not green
+const brokenMade = await makeNode({
+  title: '会失败的一步',
+  kind: 'check',
+  inputs: [{ name: 'input', type: 'text' }],
+  outputs: [{ name: 'doc', type: 'file' }],
+  executor: { kind: 'text', params: { template: '这里没有那个词' } },
+  verifier: { kind: 'file-contains', path: '', contains: '必须出现的词' },
+})
+if (!brokenMade.payload) fail('broken node rejected: ' + brokenMade.res.body)
+const brokenNode = brokenMade.payload.nodes.find(node => node.title === '会失败的一步')
+const brokenEdge = response()
+await edgeRoute.handler(postReq(edgeRoute.path, { fromNode: sourceNode.id, fromPort: 'text', toNode: brokenNode.id, toPort: 'input' }), brokenEdge)
+// that edge binds text→input again only for a different node, so it is legal
+if (brokenEdge.statusCode !== 200) fail('edge to the check node refused: ' + brokenEdge.body)
+const failedRunRes = response()
+await runRoute.handler(postReq(runRoute.path, { confirm: true }), failedRunRes)
+const failedRun = JSON.parse(failedRunRes.body)
+const brokenResult = failedRun.results.find(item => item.nodeId === brokenNode.id)
+if (brokenResult.status !== 'red') fail('a verifier that cannot pass must be red: ' + JSON.stringify(brokenResult))
+if (failedRun.flow.nodes.find(node => node.id === brokenNode.id).runtime.status !== 'red') fail('red state not persisted')
+
+// gray: a node whose executor is not registered can neither run nor go green
+const imageMade = await makeNode({
+  title: '封面图',
+  kind: 'media',
+  inputs: [{ name: 'prompt', type: 'text' }],
+  outputs: [{ name: 'image', type: 'image' }],
+  executor: { kind: 'image', params: {} },
+  verifier: { kind: 'file-exists', path: 'cover.png' },
+})
+if (!imageMade.payload) fail('image node rejected: ' + imageMade.res.body)
+const imageNode = imageMade.payload.nodes.find(node => node.title === '封面图')
+if (imageNode.runtime.available !== false || imageNode.runtime.status !== 'gray') {
+  fail('unregistered executor must render gray: ' + JSON.stringify(imageNode.runtime))
+}
+const grayRunRes = response()
+await runRoute.handler(postReq(runRoute.path, { confirm: true }), grayRunRes)
+const grayRun = JSON.parse(grayRunRes.body)
+const imageResult = grayRun.results.find(item => item.nodeId === imageNode.id)
+if (imageResult.status !== 'gray' || imageResult.artifact) fail('gray node produced something: ' + JSON.stringify(imageResult))
+if (existsSync(join(tempRoot, 'flow-out', imageNode.id + '.md'))) fail('gray node wrote an artifact')
+
+// verify re-checks disk: deleting the artifact turns green into red
+const verifyRes = response()
+await verifyRoute.handler(postReq(verifyRoute.path, {}), verifyRes)
+if (verifyRes.statusCode !== 200) fail('verify status ' + verifyRes.statusCode + ' ' + verifyRes.body)
+const verified = JSON.parse(verifyRes.body)
+if (verified.results.find(item => item.nodeId === sourceNode.id).status !== 'green') fail('verify lost the green')
+rmSync(sourceResult.artifact, { force: true })
+const reverifyRes = response()
+await verifyRoute.handler(postReq(verifyRoute.path, {}), reverifyRes)
+const reverified = JSON.parse(reverifyRes.body)
+if (reverified.results.find(item => item.nodeId === sourceNode.id).status !== 'red') {
+  fail('a deleted artifact must turn the node red: ' + JSON.stringify(reverified.results))
+}
+
+const flowAuditRes = response()
+await auditRoute.handler(getReq(auditRoute.path + '?limit=60'), flowAuditRes)
+const flowActions = JSON.parse(flowAuditRes.body).entries.map(entry => entry.action)
+for (const action of ['flow.node', 'flow.node.update', 'flow.edge', 'flow.run', 'flow.verify']) {
+  if (!flowActions.includes(action)) fail('audit missing ' + action)
+}
+console.log('graph: typed ports + refused edges (type/port/self/node/cycle) | a two-node text flow writes real artifacts | verifier red on a missing word, red after the artifact is deleted | unregistered executor stays gray and writes nothing')
 
 rmSync(tempRoot, { recursive: true, force: true })
 delete process.env.DSH_WORKBENCH_DIR
