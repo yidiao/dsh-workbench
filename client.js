@@ -431,7 +431,7 @@ window.__ModuleLoader__.load({
           h('div', { className: 'wb-run-head' },
             h('div', { className: 'wb-run-badges' },
               h('span', { className: 'wb-chip', 'data-status': current.status }, statusLabel(current.status)),
-              current.waiting && h('span', { className: 'wb-chip wb-warn' }, t('waiting')),
+              current.status === 'running' && current.waiting && h('span', { className: 'wb-chip wb-warn' }, t('waiting')),
               h('h2', { id: 'wb-run-title', style: { margin: 0 } }, t('currentRun'))),
             h('div', { className: 'wb-actions' },
               current.status === 'running' && h('button', { className: 'wb-button', type: 'button', onClick: () => cancelRun(current), disabled: dispatchBusy }, t('cancelRun')),
@@ -445,7 +445,7 @@ window.__ModuleLoader__.load({
             Number.isFinite(Number(current.steps)) && h('span', null, h('b', null, String(current.steps)), ' ' + t('steps')),
             Number.isFinite(Number(current.toolCalls)) && h('span', null, h('b', null, String(current.toolCalls)), ' ' + t('toolCalls')),
             h('span', null, t('sessionWorkspace') + ' ', h('b', null, current.cwd || '—'))),
-          current.waiting && h('div', { className: 'wb-note wb-warn', style: { marginTop: 8 } }, String(t('waitingHint')).replace('{cwd}', current.cwd || t('notSet'))),
+          current.status === 'running' && current.waiting && h('div', { className: 'wb-note wb-warn', style: { marginTop: 8 } }, String(t('waitingHint')).replace('{cwd}', current.cwd || t('notSet'))),
           h('div', { className: 'wb-reply' },
             h('strong', null, t('reply')),
             h('pre', null, current.reply || (current.status === 'running' ? t('noReplyYet') : t('noReply')))))

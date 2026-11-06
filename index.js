@@ -532,7 +532,9 @@ function applyProgress(run, events) {
   assign('toolCalls', progress.toolCalls)
   assign('messages', progress.messages)
   assign('activityAt', progress.activityAt || undefined)
-  assign('waiting', progress.waiting)
+  // Only a still-running dispatch can be "waiting". A finished or cancelled run
+  // must never render the waiting chip next to its terminal status.
+  assign('waiting', run.status === 'running' ? progress.waiting : false)
   return changed
 }
 
@@ -1085,6 +1087,9 @@ export async function apply(ctx) {
         return
       }
       run.status = 'cancelled'
+      // A cancelled run is no longer parked on a question; without this the
+      // panel would show "cancelled" and "waiting for your answer" together.
+      run.waiting = false
       run.updatedAt = Date.now()
       writeRuns(runs)
       appendAudit({ action: 'dispatch.cancel', requestId: runId, summary: `session ${run.sessionId}` })

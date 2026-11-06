@@ -444,6 +444,42 @@ if (!doneEntry || doneEntry.requestId !== run.runId) {
   process.exit(1)
 }
 
+// A terminal run must never read as "waiting", even when its session events still
+// end on ask_user_question in the Host's cache.
+sessionWaiting = true
+const doneWaitingRes = response()
+await runsRoute.handler(getReq(runsRoute.path), doneWaitingRes)
+const doneWaiting = JSON.parse(doneWaitingRes.body).items.find(item => item.runId === run.runId)
+if (!['done', 'cancelled', 'error'].includes(doneWaiting?.status) || doneWaiting?.waiting !== false) {
+  console.error('FAIL: terminal run picked up the waiting flag', doneWaiting)
+  process.exit(1)
+}
+sessionWaiting = false
+
+// Cancelling a run that is parked on a question must clear the waiting flag
+// instead of leaving "cancelled" and "waiting for your answer" on the same card.
+const runsFile = join(tempWorkspace, 'runs.json')
+const storedRuns = JSON.parse(readFileSync(runsFile, 'utf8'))
+storedRuns.items.push({
+  runId: 'run_waiting_fixture',
+  sessionId: 'sess-harness-waiting',
+  goal: '停在提问上的运行',
+  model: 'deepseek-official/deepseek-flash',
+  status: 'running',
+  waiting: true,
+  createdAt: Date.now(),
+  updatedAt: Date.now(),
+  cwd: tempWorkspace,
+})
+writeFileSync(runsFile, JSON.stringify(storedRuns, null, 2), 'utf8')
+const cancelWaitingRes = response()
+await runsCancelRoute.handler(postReq(runsCancelRoute.path, { runId: 'run_waiting_fixture' }), cancelWaitingRes)
+const cancelledWaiting = JSON.parse(cancelWaitingRes.body).run
+if (cancelledWaiting?.status !== 'cancelled' || cancelledWaiting?.waiting !== false) {
+  console.error('FAIL: cancel left the waiting flag set', cancelledWaiting)
+  process.exit(1)
+}
+
 console.log('dispatch:', run.runId, '| session:', run.sessionId, '| dry-run ok | disabled gate ok | cancel ok')
 console.log('dispatch guards: 405/400/401/403 enforced')
 console.log('audit actions:', dispatchActions.slice(0, 6).join(', '))
