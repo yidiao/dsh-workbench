@@ -157,6 +157,7 @@ window.__ModuleLoader__.load({
       const [dispatchError, setDispatchError] = React.useState('')
       const [runs, setRuns] = React.useState([])
       const [currentRun, setCurrentRun] = React.useState(null)
+      const prefilled = React.useRef(false)
 
       const load = React.useCallback(async () => {
         setBusy(true); setError(false)
@@ -204,8 +205,14 @@ window.__ModuleLoader__.load({
             } catch { /* keep previous runs */ }
           }
           const state = next.state || {}
-          setGoal(String(firstValue(state.goal, state.mainline) || ''))
-          setPlan(asList(state.next).join('\n'))
+          // Pre-fill the command draft only on the first load. Later refreshes
+          // (after a save, a decision, or a dispatch) must not overwrite the
+          // goal/plan the user is still editing.
+          if (!prefilled.current) {
+            prefilled.current = true
+            setGoal(String(firstValue(state.goal, state.mainline) || ''))
+            setPlan(asList(state.next).join('\n'))
+          }
         } catch { setError(true) } finally { setBusy(false) }
       }, [])
       React.useEffect(() => { load() }, [load])

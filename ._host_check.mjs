@@ -29,7 +29,15 @@ const createdSessionId = 'sess-harness-1'
 const mockSessionController = {
   create: async (opts) => { dispatchCalls.create.push(opts); return { sessionId: createdSessionId } },
   selectModel: async (request) => { dispatchCalls.selectModel.push(request); return { provider: request.provider, model: request.model } },
-  prompt: async (request) => { dispatchCalls.prompt.push(request); return { accepted: true } },
+  prompt: async (request, signal) => {
+    // Real Host: `async prompt(request, signal)` calls signal.throwIfAborted()
+    // unconditionally, so omitting the second argument must fail here too.
+    if (typeof signal?.throwIfAborted !== 'function') {
+      throw new Error('sessionController.prompt(request, signal) requires an AbortSignal second argument')
+    }
+    dispatchCalls.prompt.push(request)
+    return { accepted: true }
+  },
   cancel: async (request) => { dispatchCalls.cancel.push(request); return { accepted: true } },
   list: async () => [{ sessionId: createdSessionId, agentAvailable: true, running: sessionRunning, blank: false, updatedAt: Date.now() }],
 }
@@ -394,8 +402,14 @@ const auditDispatchRes = response()
 await auditRoute.handler(getReq(auditRoute.path + '?limit=20'), auditDispatchRes)
 const dispatchAudit = JSON.parse(auditDispatchRes.body)
 const dispatchActions = dispatchAudit.entries.map(entry => entry.action)
-if (!dispatchActions.includes('dispatch.start') || !dispatchActions.includes('dispatch.cancel')) {
+if (!dispatchActions.includes('dispatch.start') || !dispatchActions.includes('dispatch.cancel') || !dispatchActions.includes('dispatch.done')) {
   console.error('FAIL: dispatch audit missing', dispatchActions)
+  process.exit(1)
+}
+// The terminal entry must be answerable to the run's start: same requestId.
+const doneEntry = dispatchAudit.entries.find(entry => entry.action === 'dispatch.done')
+if (!doneEntry || doneEntry.requestId !== run.runId) {
+  console.error('FAIL: dispatch.done not linked to run', doneEntry)
   process.exit(1)
 }
 

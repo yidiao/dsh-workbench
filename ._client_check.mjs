@@ -27,6 +27,11 @@ const React = {
     return [hookStates[index], set]
   },
   useCallback: (fn) => fn,
+  useRef: (init) => {
+    const index = hookIndex++
+    if (!(index in hookStates)) hookStates[index] = { current: init }
+    return hookStates[index]
+  },
   useEffect: (fn) => { try { fn() } catch {} },
 }
 

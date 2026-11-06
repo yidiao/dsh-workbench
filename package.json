@@ -1,6 +1,6 @@
 {
   "name": "dsh-workbench",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "工作区指挥台：可编辑接续状态、审计记录、模型路由，并可把一条指令派发到真实 DSH 会话（工作区显式启用）。",
   "keywords": [
     "deepseek-harness",

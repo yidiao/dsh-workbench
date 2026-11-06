@@ -67,6 +67,10 @@ Read endpoints reject non-loopback hosts and apply `connection.requestRejection`
 ```sh
 node --check index.js
 node --check client.js
+node ._host_check.mjs
+node ._client_check.mjs
 ```
+
+`._host_check.mjs` runs the Host bundle against a mocked `sessionController` and the real filesystem: registration, guards, dispatch lifecycle (`create → selectModel → prompt`), run status/reply, cancellation, and the audit actions (`dispatch.start/done/cancel`) are all asserted — including that `prompt` is called with a real `AbortSignal`, matching the Host API's `prompt(request, signal)` contract. `._client_check.mjs` mounts the panel headlessly and checks the continuity editor, audit trail, and sidebar icon.
 
 Then install the package in a test profile (or a profile you explicitly designate for testing), inspect the live `main` and `sidebar.panellist` slots, and verify the panel in the connected Harness Web UI. A successful package installation alone does not prove that a browser rendered the panel.

@@ -1,4 +1,4 @@
-// dsh-workbench v0.4.0 —— 工作区指挥台：可编辑接续状态 + 审计 + 派发到真实 DSH 会话
+// dsh-workbench v0.4.1 —— 工作区指挥台：可编辑接续状态 + 审计 + 派发到真实 DSH 会话
 //
 // v0.2 的 UI 读取真实工作台文件并生成本地任务草稿；不写母站，不启动模型，不改变会话。
 // 三个 Host 工具仍保留：wb_get / wb_set / wb_close。
@@ -486,6 +486,13 @@ function finaliseRun(ctx, run) {
   run.status = kind === 'error' ? 'error' : (kind === 'aborted' || kind === 'interrupted') ? 'cancelled' : 'done'
   run.reply = lastAssistantText(ctx, run.sessionId)
   run.updatedAt = Date.now()
+  // Close the audit chain: dispatch.start must be answerable with a terminal
+  // entry, otherwise a finished run is indistinguishable from a lost one.
+  appendAudit({
+    action: run.status === 'error' ? 'dispatch.error' : run.status === 'cancelled' ? 'dispatch.cancel' : 'dispatch.done',
+    requestId: run.runId,
+    summary: `session ${run.sessionId} · ${run.status} · reply ${run.reply.length} chars`,
+  })
 }
 
 async function refreshRuns(ctx, items) {
@@ -953,13 +960,20 @@ export async function apply(ctx) {
           modelWarning = '模型格式应为 provider/model，已使用默认模型'
         }
       }
+      // Host `sessionController.prompt(request, signal)` requires a caller
+      // lifetime AbortSignal: its guard calls `signal.throwIfAborted()`
+      // unconditionally, so an omitted signal throws
+      // `Cannot read properties of undefined (reading 'throwIfAborted')`.
+      // Cancellation itself still goes through `controller.cancel`; this
+      // signal only bounds prompt admission.
+      const admission = new AbortController()
       try {
         const ack = await controller.prompt({
           sessionId,
           requestId: runId,
           mode: 'queue',
           content: [{ type: 'text', text: promptText }],
-        })
+        }, admission.signal)
         const accepted = ack?.accepted === true || ack?.value?.accepted === true
         if (!accepted) throw new Error('sessionController.prompt 未被接受')
       } catch (error) {
