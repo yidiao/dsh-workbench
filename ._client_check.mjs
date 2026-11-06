@@ -1,13 +1,14 @@
-// Headless harness for the CLIENT bundle (client.js), v1.0.
-// Proves the shape the flow work depends on:
-//   1. the panel is a RIGHT-COLUMN tab (no main panel, no panellist icon), so it
-//      cannot take the chat column, and it is told which session it renders;
-//   2. the moment is derived from data (live run → working; unclosed gap →
-//      close out; else attach) and each moment paints one job;
-//   3. sync work queues into the bound session through the flow routes, and the
-//      channel rule is visible before the click;
+// Headless harness for the CLIENT bundle (client.js), v0.15.
+// Proves the shape the main-area panel depends on:
+//   1. the panel is a MAIN-AREA page reached from a left-rail icon, and it no
+//      longer touches the right column;
+//   2. the canvas is the tab it opens on, and each tab paints exactly its job;
+//   3. every visible string is short: the dictionaries are measured, not
+//      eyeballed, so the panel cannot drift back into walls of text;
 //   4. the close-out form writes one record through /api/close;
 //   5. the reused views (composer, report, decisions, canvas) still render.
+
+import { readFileSync } from 'node:fs'
 
 let captured = null
 globalThis.window = { __ModuleLoader__: { load: (spec) => { captured = spec } } }
@@ -336,7 +337,8 @@ function render(el) {
 function renderPanel(sessionId = 'session-aaa') {
   for (const cleanup of pendingCleanups.splice(0)) { try { cleanup() } catch { /* ignore */ } }
   hookIndex = 0
-  return render(body.renderFn({ sessionId }))
+  const panel = registrations.find(r => r.slot === 'main' && r.spec?.key === 'dsh-workbench')
+  return render(panel.renderFn({ sessionId }))
 }
 function findAll(node, predicate, out = []) {
   if (!node || typeof node !== 'object') return out
@@ -369,11 +371,11 @@ function textDump(node, out = []) {
   if (node && typeof node === 'object') textDump(node.props?.children, out)
   return out
 }
-const momentOf = tree => findAll(tree, n => n.type === 'button' && n.props?.['data-moment'])
-const activeMoment = tree => (momentOf(tree).find(n => n.props['data-active'] === 'true') || {}).props?.['data-moment']
-const clickMoment = (tree, id) => {
-  const button = momentOf(tree).find(node => node.props['data-moment'] === id)
-  if (!button) fail('no moment button ' + id, tree)
+const tabOf = tree => findAll(tree, n => n.type === 'button' && n.props?.['data-tab'])
+const activeTab = tree => (tabOf(tree).find(n => n.props['data-active'] === 'true') || {}).props?.['data-tab']
+const clickTab = (tree, id) => {
+  const button = tabOf(tree).find(node => node.props['data-tab'] === id)
+  if (!button) fail('no tab button ' + id, tree)
   button.props.onClick()
 }
 const clickButton = (tree, label) => {
@@ -387,17 +389,17 @@ const setTextarea = (tree, id, value) => {
   field.props.onChange({ target: { value } })
 }
 
-// --- 1. registration: right column tab, session-scoped body ----------------
-const body = registrations.find(r => r.slot === 'sidebar.right.pane.tab' && r.spec?.key === 'dsh-workbench/workbench')
-if (!body) fail('no sidebar.right.pane.tab body for dsh-workbench/workbench: ' + JSON.stringify(registrations.map(r => [r.slot, r.spec?.key || r.spec?.id])))
-if (!tabTypes.length || tabTypes[0].kind !== 'workbench') fail('no workbench tab type registered')
-if (tabTypes[0].priority !== 'extension') fail('workbench tab type must claim the extension band: ' + tabTypes[0].priority)
-if (!Array.isArray(tabTypes[0].guide) || tabTypes[0].guide[0].id !== 'workbench') fail('no guide entry for the workbench tab')
-if (registrations.some(r => r.slot === 'main')) fail('the panel still registers a main slot (it would take the chat column)')
-if (registrations.some(r => r.slot === 'sidebar.panellist')) fail('the panel still registers a left-sidebar entry for a main panel that no longer exists')
-const injected = body.spec.inject('session-zzz')
-if (injected?.sessionId !== 'session-zzz') fail('tab body did not receive its session id: ' + JSON.stringify(injected))
-console.log('registration: right-column tab type + guide entry, session-scoped body, no main panel')
+// --- 1. registration: main-area page reached from the left rail -----------
+const panel = registrations.find(r => r.slot === 'main' && r.spec?.key === 'dsh-workbench')
+if (!panel) fail('no main-area panel for dsh-workbench: ' + JSON.stringify(registrations.map(r => [r.slot, r.spec?.key || r.spec?.id])))
+const rail = registrations.find(r => r.slot === 'sidebar.panellist' && r.spec?.id === 'dsh-workbench')
+if (!rail) fail('no left-rail entry for the workbench: ' + JSON.stringify(registrations.map(r => [r.slot, r.spec?.id])))
+if (rail.spec.order !== 25) fail('left-rail entry lost its position: ' + rail.spec.order)
+if (typeof rail.spec.label !== 'function' || rail.spec.label() !== 'title') fail('left-rail entry has no title label')
+if (registrations.some(r => r.slot === 'sidebar.right.pane.tab')) fail('the panel is still a right-column tab')
+if (tabTypes.length) fail('the workbench still registers a right-column tab type')
+if (!findNode(rail.renderFn({ size: 20, active: false }), n => n.type === 'svg')) fail('left-rail entry has no icon')
+console.log('registration: main-area panel + left-rail icon, no right column, no session binding')
 
 // --- 2. auto moment: a live run wins --------------------------------------
 // First paint mounts and fires the read-only fetches; the second paint is the
@@ -406,18 +408,23 @@ let tree = renderPanel()
 await new Promise(resolve => setTimeout(resolve, 25))
 tree = renderPanel()
 if (!findClass(tree, 'wb-page')) fail('panel did not mount (.wb-page missing)', tree)
-const moments = momentOf(tree).map(node => node.props['data-moment'])
-if (moments.slice(0, 3).join(',') !== 'attach,work,close') fail('moment bar is not attach/work/close: ' + moments.join(','), tree)
-if (activeMoment(tree) !== 'work') fail('a live run must open the working moment: ' + activeMoment(tree), tree)
-if (!findClass(tree, 'wb-run')) fail('working moment did not paint the run card', tree)
+const tabIds = tabOf(tree).map(node => node.props['data-tab'])
+if (tabIds.join(',') !== 'canvas,task,history,workspace') fail('tab bar is not canvas/task/history/workspace: ' + tabIds.join(','), tree)
+if (activeTab(tree) !== 'canvas') fail('the panel must open on the canvas, not on a form: ' + activeTab(tree), tree)
+if (!findClass(tree, 'wb-flow')) fail('canvas tab did not paint the node graph', tree)
+const hasExactClass = (node, name) => findAll(node, n => String(n.props?.className || '').split(/\s+/).includes(name)).length > 0
+if (hasExactClass(tree, 'wb-compose') || hasExactClass(tree, 'wb-run')) fail('a form or run card leaked into the canvas tab', tree)
+// The run card and the session's own progress belong to the history tab.
+clickTab(tree, 'history')
+tree = renderPanel()
+if (!findClass(tree, 'wb-run')) fail('history tab did not paint the run card', tree)
 if (!findText(tree, '统计 md 行数 top3')) fail('newest run from runs.json not rendered', tree)
 if (!findText(tree, 'orphanedChip')) fail('orphaned run not marked in the run card', tree)
 if (findText(tree, 'cancelRun')) fail('orphaned run still offers a cancel that cannot work', tree)
-if (findClass(tree, 'wb-live') === false) fail('working moment did not paint the current session', tree)
-await new Promise(resolve => setTimeout(resolve, 25))
+if (!findClass(tree, 'wb-run-list')) fail('history tab did not paint the run list', tree)
+console.log('history: newest run card + run list, session progress lives in the conversation')
+clickTab(tree, 'canvas')
 tree = renderPanel()
-console.log('LIVE-PATH', JSON.stringify(findAll(tree, n => n.props?.className === 'wb-live').length), JSON.stringify(requests.filter(r => r.path === '/dsh-workbench/api/live').length))
-if (!includesText(tree, '当前会话的最后一段回复。')) fail('live reply not available', tree)
 // the graph is painted from the Host's validation, colours included
 if (!findClass(tree, 'wb-flow')) fail('working moment did not paint the node graph', tree)
 if (!findText(tree, '资料') || !findText(tree, '封面图')) fail('graph nodes missing from the canvas', tree)
@@ -442,8 +449,8 @@ const graphRunCall = requests.slice(beforeGraphRun).find(r => r.path === '/dsh-w
 if (!graphRunCall) fail('run graph did not call the run route')
 if (graphRunCall.body.confirm !== true) fail('the graph ran without explicit confirm: ' + JSON.stringify(graphRunCall.body))
 if (!includesText(tree, 'flowRan')) fail('graph run result not reported', tree)
-if (findClass(tree, 'wb-sync')) fail('attach form leaked into the working moment', tree)
-if (findClass(tree, 'wb-close')) fail('close form leaked into the working moment', tree)
+if (findClass(tree, 'wb-sync')) fail('the sync box survived the move to the main area', tree)
+if (findClass(tree, 'wb-close')) fail('close form leaked into the canvas tab', tree)
 // authoring: the canvas is not a museum — a node and a connection can be built here
 const titleField = findNode(tree, n => n.type === 'input' && n.props?.id === 'wb-node-title')
 if (!titleField) fail('no add-node title field', tree)
@@ -550,68 +557,20 @@ if (!findText(tree, '资料') || !findText(tree, '封面图')) fail('the example
 canvasEmpty = false
 console.log('moment: live run → working, orphan flagged, live session painted, other moments absent')
 
-// --- 3. working → attach: memory is the first thing on screen --------------
-clickMoment(tree, 'attach')
+// --- 3. workspace tab: memory first, long lists folded ---------------------
+clickTab(tree, 'workspace')
 tree = renderPanel()
-if (activeMoment(tree) !== 'attach') fail('attach moment not selected', tree)
-if (!findClass(tree, 'wb-memory')) fail('attach moment did not paint the project memory', tree)
+if (activeTab(tree) !== 'workspace') fail('workspace tab not selected', tree)
+if (!findClass(tree, 'wb-memory')) fail('workspace tab did not paint the project memory', tree)
 if (!includesText(tree, 'v1.0：会话接续层 + 装配层')) fail('memory mainline missing', tree)
 if (!includesText(tree, 'D:/AI Pj/_workbench')) fail('memory project root missing', tree)
-if (!findClass(tree, 'wb-sync')) fail('attach moment did not paint the task box', tree)
-if (findClass(tree, 'wb-run')) fail('run card leaked into the attach moment', tree)
-if (findClass(tree, 'wb-close')) fail('close form leaked into the attach moment', tree)
-// the canvas must be reachable from where a fresh session actually opens
-const door = findNode(tree, n => n.type === 'button' && findText(n.props?.children, 'graphDoor'))
-if (!findClass(tree, 'wb-canvas-door') || !door) fail('attach moment has no way into the canvas', tree)
-door.props.onClick()
-tree = renderPanel()
-if (activeMoment(tree) !== 'work') fail('the canvas door did not switch to the working moment', tree)
-if (!findClass(tree, 'wb-graph-stage')) fail('the canvas door opened a moment without the canvas', tree)
-// go back: the attach assertions that follow still need the attach moment
-clickMoment(tree, 'attach')
-tree = renderPanel()
-
-
-// typing asks the Host what channel this work belongs to
-setTextarea(tree, 'wb-sync-text', '把那段话改短一点')
-tree = renderPanel()
-await new Promise(resolve => setTimeout(resolve, 400))
-tree = renderPanel()
-const channelCall = requests.filter(r => r.path === '/dsh-workbench/api/channel').pop()
-if (!channelCall || channelCall.body.text !== '把那段话改短一点') fail('typing did not ask the channel route: ' + JSON.stringify(requests.map(r => r.path)))
-const channelChip = findAll(tree, n => n.props?.['data-channel'])[0]
-if (!channelChip || channelChip.props['data-channel'] !== 'sync') fail('channel chip did not show sync: ' + JSON.stringify(channelChip?.props))
-const syncButton = findNode(tree, n => n.type === 'button' && findText(n.props?.children, 'syncGo'))
-if (!syncButton) fail('no sync button', tree)
-if (syncButton.props.disabled) fail('sync button disabled for a short task')
-
-// the sync click must name the session the slot injected
-const before = requests.length
-clickButton(tree, 'syncGo')
-tree = renderPanel()
-await new Promise(resolve => setTimeout(resolve, 400))
-tree = renderPanel()
-const syncCall = requests.slice(before).find(r => r.path === '/dsh-workbench/api/sync')
-if (!syncCall) fail('sync click did not call the sync route')
-if (syncCall.body.sessionId !== 'session-aaa') fail('sync did not target the injected session: ' + JSON.stringify(syncCall.body))
-if (syncCall.body.text !== '把那段话改短一点') fail('sync did not carry the task text')
-if (!includesText(tree, 'syncQueued')) fail('sync success not reported', tree)
-console.log('sync: channel rule shown before the click, prompt queued into the injected session')
-
-// a long task is refused in place and the dispatch form opens by itself
-setTextarea(tree, 'wb-sync-text', '帮我生一张封面图')
-tree = renderPanel()
-await new Promise(resolve => setTimeout(resolve, 400))
-tree = renderPanel()
-const asyncChip = findAll(tree, n => n.props?.['data-channel'])[0]
-if (asyncChip?.props['data-channel'] !== 'async') fail('generation task not classified async: ' + JSON.stringify(asyncChip?.props))
-const asyncButton = findNode(tree, n => n.type === 'button' && findText(n.props?.children, 'syncGo'))
-if (!asyncButton?.props.disabled) fail('sync button still enabled for long work')
-if (!findClass(tree, 'wb-compose')) fail('long work did not open the dispatch form', tree)
-console.log('channel: long work is refused in place and the dispatch form opens')
+if (!findClass(tree, 'wb-close')) fail('the close-out form is no longer reachable', tree)
+if (findClass(tree, 'wb-flow')) fail('the canvas leaked into the workspace tab', tree)
+if (findClass(tree, 'wb-sync')) fail('the sync box survived the move to the main area', tree)
+console.log('workspace: memory first, one tab per job, no side-panel leftovers')
 
 // the flywheel recommends, and one click puts the recipe back in the form
-if (!findClass(tree, 'wb-fly')) fail('attach moment did not render the flywheel card', tree)
+if (!findClass(tree, 'wb-fly')) fail('workspace tab did not render the flywheel card', tree)
 if (!includesText(tree, '飞轮推荐模板')) fail('a promoted candidate is not listed', tree)
 if (!includesText(tree, '3 绿 / 0 红')) fail('the candidate does not say why it is recommended', tree)
 if (!includesText(tree, '750 in / 150 out')) fail('per-green cost not shown', tree)
@@ -620,24 +579,22 @@ const resumeButton = findNode(tree, n => n.type === 'button' && n.props?.classNa
 if (!resumeButton) fail('no continue button on the recommendation', tree)
 resumeButton.props.onClick()
 tree = renderPanel()
+if (!includesText(tree, 'flyFilled')) fail('continue did not confirm', tree)
+clickTab(tree, 'task')
+tree = renderPanel()
 const flyGoal = findNode(tree, n => n.type === 'input' && n.props?.id === 'wb-goal')
 if (!flyGoal || flyGoal.props.value !== '飞轮目标：写一段周报摘要') fail('continue did not fill the form from the template', tree)
-if (!includesText(tree, 'flyFilled')) fail('continue did not confirm', tree)
-const goneButton = findNode(tree, n => n.type === 'button' && n.props?.className === 'wb-mini' && findText(n.props?.children, 'flyResume'))
-if (!goneButton) fail('second candidate has no continue button')
-const allResume = []
-const walk = node => {
-  if (!node || typeof node !== 'object') return
-  if (Array.isArray(node)) { node.forEach(walk); return }
-  if (node.type === 'button' && findText(node.props?.children, 'flyResume')) allResume.push(node)
-  walk(node.props?.children)
-}
-walk(tree)
+clickTab(tree, 'workspace')
+tree = renderPanel()
+const allResume = findAll(tree, n => n.type === 'button' && n.props?.className === 'wb-mini' && findText(n.props?.children, 'flyResume'))
+if (allResume.length < 2) fail('second candidate has no continue button', tree)
 allResume[allResume.length - 1].props.onClick()
 tree = renderPanel()
 if (!includesText(tree, 'flyMissing')) fail('a candidate whose template vanished must say so', tree)
 
 // --- 4. the reused composer still assembles from a module and a template ---
+clickTab(tree, 'task')
+tree = renderPanel()
 const templateSelect = findNode(tree, n => n.type === 'select' && n.props?.id === 'wb-template')
 if (!templateSelect) fail('template selector missing in the dispatch form', tree)
 const templateOption = templateSelect.props.children.find(child => child?.props?.value === 'tpl_1')
@@ -666,12 +623,13 @@ console.log('graph: verified green, no-executor gray, run carries confirm:true, 
 console.log('composer: template fills the slots, module insertion still works')
 
 // --- 5. close-out: one form, one write ------------------------------------
-clickMoment(tree, 'close')
+clickTab(tree, 'history')
 tree = renderPanel()
-if (activeMoment(tree) !== 'close') fail('close moment not selected', tree)
-if (!findClass(tree, 'wb-close')) fail('close moment did not paint the close form', tree)
-if (!findClass(tree, 'wb-report')) fail('close moment did not paint the run report', tree)
-if (findClass(tree, 'wb-sync')) fail('task box leaked into the close moment', tree)
+if (!findClass(tree, 'wb-report')) fail('history tab did not paint the run report', tree)
+clickTab(tree, 'workspace')
+tree = renderPanel()
+if (!findClass(tree, 'wb-close')) fail('workspace tab did not paint the close form', tree)
+if (findClass(tree, 'wb-sync')) fail('the sync box survived the move to the main area', tree)
 // Each control is a fresh render, exactly like a human editing one field at a
 // time; a single render would keep re-spreading a stale draft object.
 setTextarea(tree, 'wb-close-next', '重启后按清单验收')
@@ -705,7 +663,7 @@ const outcomeOptions = outcomeSelect.props.children.map(child => child.props.val
 if (outcomeOptions.join(',') !== 'green,yellow,red') fail('outcome selector is not green/yellow/red: ' + outcomeOptions.join(','))
 console.log('close: one form writes next + outcome + decision through /api/close')
 
-// --- 6. auto moment from the gap; and no session means no sync ------------
+// --- 6. the panel never depends on a bound session ------------------------
 // A fresh mount paints loading first, then the data; two paints per case.
 const remount = async sessionId => {
   for (const cleanup of pendingCleanups.splice(0)) { try { cleanup() } catch { /* ignore */ } }
@@ -718,36 +676,52 @@ const remount = async sessionId => {
 sessionRunning = false
 memoryGapOpen = true
 tree = await remount()
-if (activeMoment(tree) !== 'close') fail('an unclosed gap must open the close moment: ' + activeMoment(tree), tree)
+if (activeTab(tree) !== 'canvas') fail('a fresh mount must open on the canvas: ' + activeTab(tree), tree)
+if (!findClass(tree, 'wb-flow')) fail('fresh mount did not paint the canvas', tree)
 memoryGapOpen = false
 tree = await remount()
-if (activeMoment(tree) !== 'attach') fail('a closed project with no run must open attach: ' + activeMoment(tree), tree)
+if (activeTab(tree) !== 'canvas') fail('the opened tab must not depend on project data', tree)
+// No session is bound in the main area, and nothing may complain about it.
 tree = await remount('')
-if (!includesText(tree, 'sessionMissing')) fail('a panel without a session must say so', tree)
-const orphanSync = findNode(tree, n => n.type === 'button' && findText(n.props?.children, 'syncGo'))
-if (!orphanSync?.props.disabled) fail('sync must be disabled without a session')
+if (includesText(tree, 'sessionMissing')) fail('the panel still talks about a missing session', tree)
+if (findClass(tree, 'wb-sync')) fail('the sync box survived the move to the main area', tree)
 // a graph the Host refused cannot be run, and the reason is on screen
-sessionRunning = true
 flowBroken = true
 tree = await remount()
-if (activeMoment(tree) !== 'work') fail('a live run must still open the working moment with a broken graph')
+if (activeTab(tree) !== 'canvas') fail('a broken graph must stay on the canvas tab', tree)
 const brokenButton = findNode(tree, n => n.type === 'button' && findText(n.props?.children, 'flowRun'))
 if (!brokenButton) fail('graph section vanished on a broken graph', tree)
 if (!brokenButton.props.disabled) fail('a refused graph still offered a run button', tree)
 if (!findClass(tree, 'wb-warn-note')) fail('the refused edge reason is not on screen', tree)
 flowBroken = false
 sessionRunning = false
-// remount again so the live-poll interval from the working moment is cleaned up
 tree = await remount()
 
-console.log('moment: gap → close out, closed → attach; no session disables sync and says why')
+console.log('layout: the canvas opens first, tabs carry one job each, no session is required')
 console.log('graph: a refused graph cannot be run and shows the edge reason')
+
+const source = readFileSync(new URL('./client.js', import.meta.url), 'utf8')
+const limits = { FLOW_EN: 44, FLOW_ZH: 30, en: 44, zh: 30 }
+for (const [name, limit] of Object.entries(limits)) {
+  const marker = '    const ' + name + ' = {'
+  const start = source.indexOf(marker)
+  if (start < 0) fail('dictionary not found: ' + name)
+  const end = source.indexOf('\n    }', start)
+  const block = source.slice(start, end)
+  const re = /\b([a-zA-Z0-9_]+): '((?:[^'\\]|\\.)*)'/g
+  let match
+  while ((match = re.exec(block))) {
+    if (match[2].length > limit) fail('visible copy too long in ' + name + '.' + match[1] + ' (' + match[2].length + ' > ' + limit + '): ' + match[2])
+  }
+}
+console.log('copy: every panel string fits one short line (' + Object.entries(limits).map(([k, v]) => k + '≤' + v).join(', ') + ')')
 
 console.log('\nCLIENT HARNESS PASS')
 
-// The panel keeps a poll interval alive for the moment it shows, so a test
-// process would sit there after every assertion has passed. Leaving explicitly
-// keeps the exit code honest: only the assertions above can fail this run.
+// While any run is unfinished the panel polls runs.json, and the mock effect
+// runs on every render, so a test process would sit there after every assertion
+// has passed. Leaving explicitly keeps the exit code honest: only the assertions
+// above can fail this run.
 const stragglers = process._getActiveHandles().filter(handle => handle.constructor?.name === 'Timeout').length
 if (stragglers > 0) console.log('note: ' + stragglers + ' panel poll timer(s) still armed; the test exits instead of waiting')
 process.exit(0)

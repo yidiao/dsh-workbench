@@ -20,92 +20,92 @@ window.__ModuleLoader__.load({
     // describe a taxonomy.
     const FLOW_EN = {
       momentAttach: 'Attach', momentWork: 'Working', momentClose: 'Close out',
-      momentHint: 'The moment is picked from data: a live run wins, then an unclosed gap, else attach.',
-      guideDescription: 'Attach to the session, work in it, close it out — one memory per project.',
-      sessionMissing: 'No session is bound to this panel, so sync work cannot be queued. Open the workbench from a conversation.',
+      momentHint: 'The moment follows the data.',
+      guideDescription: 'One memory per project.',
+      sessionMissing: 'No session bound.',
       memoryTitle: 'Project memory', memoryRoot: 'root', memoryGapOpen: 'Not closed out yet',
       memoryActivate: 'Use this project', memoryActivateDone: 'Project bound to this session.',
-      memoryEmpty: 'This project has no memory yet — the first save creates it.',
-      attachHint: 'Pick up where the last session stopped, then say what this one is for.',
+      memoryEmpty: 'No memory yet — first save creates it.',
+      attachHint: 'Say what this session is for.',
       syncTitle: 'This task', syncPlaceholder: 'What should happen now, in this session?',
       syncGo: 'Do it here', syncAsync: 'Dispatch instead', syncBusy: 'Queuing…',
-      syncQueued: 'Queued into this session — it continues at the next step.',
-      syncRefused: 'That is long work: it belongs in its own session.',
+      syncQueued: 'Queued into this session.',
+      syncRefused: 'Long work: needs its own session.',
       channelSync: 'same session', channelAsync: 'child session', channelWhy: 'why',
       liveTitle: 'This session', liveIdle: 'idle', liveRunning: 'working',
       closeTitle: 'Close out', closeNext: 'Next first step', closeDecisionTitle: 'Decision title',
       closeDecision: 'Judgement (optional)', closeDecisionPlaceholder: 'What was decided, why, what it costs…',
       closeOutcome: 'Outcome', outcomeGreen: 'green — verified', outcomeYellow: 'yellow — partly',
       outcomeRed: 'red — failed', closeSubmit: 'Write close-out', closeBusy: 'Writing…',
-      closeDone: 'Close-out written: the injected block now carries the next step.',
+      closeDone: 'Close-out written.',
       closeFailed: 'Close-out failed.', closeNeedsNext: 'A close-out needs the next first step.',
       moreLongJobs: 'Long jobs',
-      flowTitle: 'Node graph', flowEmpty: 'No nodes yet — the graph is empty, not broken.',
+      flowTitle: 'Node graph', flowEmpty: 'Empty graph, not a broken one.',
       flowGray: 'no executor', flowGreen: 'verified', flowRed: 'failed', flowIdle: 'not run yet',
       flowNoExecutor: 'unregistered executor', flowBroken: 'Graph refused:',
       flowRun: 'Run graph', flowVerify: 'Re-check artifacts', flowBusy: 'Running…',
       flowRan: 'Ran. Verified:', flowRanVerify: 'Re-checked. Verified:',
-      graphTitle: 'Canvas', graphHint: 'Read-only layout: connections are drawn from the Host\'s own graph. Build it with the forms below, then run it.',
-      graphEmpty: 'Nothing on the canvas yet. Press "Load example" to get a two-node graph that really goes green, or add a node below.',
+      graphTitle: 'Canvas', graphHint: 'Connections come from the Host.',
+      graphEmpty: 'Empty canvas. Load the example.',
       graphAddNode: 'Add node', graphNodeTitle: 'Title', graphExecutor: 'Executor', graphParams: 'Content / template',
-      graphVerifier: 'Verifier', graphVerifierPath: 'Artifact path (empty = this node\'s own file)', graphVerifierContains: 'Must contain',
+      graphVerifier: 'Verifier', graphVerifierPath: 'Artifact path (empty = own file)', graphVerifierContains: 'Must contain',
       graphAddEdge: 'Connect', graphEdgeFrom: 'From', graphEdgeTo: 'To', graphDemo: 'Load example',
-      graphDemoBusy: 'Loading…', graphDemoDone: 'Example loaded: press "Run graph" — both nodes should turn green.',
+      graphDemoBusy: 'Loading…', graphDemoDone: 'Example loaded. Run the graph.',
       graphAdded: 'Node added.', graphEdgeAdded: 'Edge added.', graphDeleted: 'Removed.',
       graphSaved: 'Saved.', graphEdges: 'Connections', graphNoEdges: 'No connections yet.',
       graphParamsPlaceholder: 'Literal text, or a template using {{input}}', graphRunFirst: 'Run graph to produce artifacts.',
       graphStep: 'step',
       graphZoomIn: 'Zoom in', graphZoomOut: 'Zoom out', graphArrange: 'Tidy up',
-      graphDragHint: 'Drag a card to move it; the position is remembered. It is view state only — it never changes what depends on what.',
-      graphDoor: 'Open the canvas', graphDoorHint: 'Assembling a next step? The canvas is read-only about relations and honest about what ran.',
+      graphDragHint: 'Drag a card; its position is remembered.',
+      graphDoor: 'Open the canvas', graphDoorHint: 'Building happens on the canvas tab.',
       flyTitle: 'Continue from here', flyReward: 'promoted',
-      flyNone: 'Nothing is recommended yet — a card is recommended after 2 verified outcomes and no failure.',
+      flyNone: 'Two verified, zero red.',
       flyCost: 'cost per green', flyCostUnknown: 'cost unknown', flyResume: 'Continue',
       flyFilled: 'Template loaded into the form.', flyMissing: 'That template is gone — nothing was filled.', moreCanvas: 'Canvas', moreHistory: 'Past runs', moreAudit: 'Audit trail',
       memoryDecisions: 'Recent decisions', running: 'running',
     }
     const FLOW_ZH = {
       momentAttach: '接上', momentWork: '在做', momentClose: '收工',
-      momentHint: '时刻由数据自动判定：有运行就进「在做」，有未收工的缺口就进「收工」，否则「接上」。',
-      guideDescription: '接上当前会话、在里面做事、收工写回记忆——一个项目一份记忆。',
-      sessionMissing: '这个面板没有绑定会话，同步任务无处可排。请从某个对话里打开工作台。',
+      momentHint: '时刻由数据判定。',
+      guideDescription: '一个项目一份记忆。',
+      sessionMissing: '未绑定会话。',
       memoryTitle: '项目记忆', memoryRoot: '根目录', memoryGapOpen: '上次没收工',
       memoryActivate: '用这个项目', memoryActivateDone: '已把这个项目绑到当前会话。',
-      memoryEmpty: '这个项目还没有记忆——第一次保存时创建。',
-      attachHint: '先接上次停的地方，再说清这次要做什么。',
+      memoryEmpty: '还没有记忆，第一次保存就会建。',
+      attachHint: '说明这个会话要做什么。',
       syncTitle: '这次做什么', syncPlaceholder: '现在要在这个会话里做什么？',
       syncGo: '就在这里做', syncAsync: '改成派长活', syncBusy: '排队中…',
-      syncQueued: '已排进当前会话，下一步就接着做。',
-      syncRefused: '这属于长活，应该给它自己的会话。',
+      syncQueued: '已排进这个会话。',
+      syncRefused: '长活：另开会话。',
       channelSync: '同一会话', channelAsync: '子会话', channelWhy: '依据',
       liveTitle: '当前会话', liveIdle: '空闲', liveRunning: '工作中',
       closeTitle: '收工', closeNext: '下次第一步', closeDecisionTitle: '判断标题',
       closeDecision: '判断（可选）', closeDecisionPlaceholder: '决定了什么、为什么、代价是什么…',
       closeOutcome: '结论', outcomeGreen: '绿——已验证', outcomeYellow: '黄——部分',
       outcomeRed: '红——失败', closeSubmit: '写入收工', closeBusy: '写入中…',
-      closeDone: '已写入收工：注入块里已经带上下一步。',
+      closeDone: '收工已写回。',
       closeFailed: '收工写入失败。', closeNeedsNext: '收工必须写下次的第一步。',
       moreLongJobs: '长活',
-      flowTitle: '节点图', flowEmpty: '画布上还没有节点——这是空，不是坏。',
+      flowTitle: '节点图', flowEmpty: '图是空的，不是坏了。',
       flowGray: '没有 executor', flowGreen: '已验证', flowRed: '失败', flowIdle: '还没跑',
       flowNoExecutor: '未注册的 executor', flowBroken: '画布被拒：',
       flowRun: '跑一遍画布', flowVerify: '重验产物', flowBusy: '正在跑…',
-      graphTitle: '画布', graphHint: '只读布局：连线是宿主按真实节点图画的；用下面的表单建图，再点「跑一遍画布」。',
-      graphEmpty: '画布上什么都没有。点「载入示例」拿一张能真变绿的两人图，或者在下面加一个节点。',
+      graphTitle: '画布', graphHint: '连线来自宿主节点图；用下面的表单建图。',
+      graphEmpty: '空画布。点「载入示例」，或加一个节点。',
       graphAddNode: '加节点', graphNodeTitle: '标题', graphExecutor: '执行器', graphParams: '内容 / 模板',
-      graphVerifier: '校验器', graphVerifierPath: '产物路径（空 = 这个节点自己的文件）', graphVerifierContains: '必须包含',
+      graphVerifier: '校验器', graphVerifierPath: '产物路径（空=本节点文件）', graphVerifierContains: '必须包含',
       graphAddEdge: '连线', graphEdgeFrom: '从', graphEdgeTo: '到', graphDemo: '载入示例',
-      graphDemoBusy: '载入中…', graphDemoDone: '示例已就位：点「跑一遍画布」，两个节点应该都变绿。',
+      graphDemoBusy: '载入中…', graphDemoDone: '示例已载入，点「跑一遍画布」。',
       graphAdded: '节点已加。', graphEdgeAdded: '连线已加。', graphDeleted: '已删除。',
       graphSaved: '已保存。', graphEdges: '连线', graphNoEdges: '还没有连线。',
       graphParamsPlaceholder: '直接写文字，或用 {{input}} 的模板', graphRunFirst: '点「跑一遍画布」才会产出文件。',
       graphStep: '步骤',
       graphZoomIn: '放大', graphZoomOut: '缩小', graphArrange: '整理',
-      graphDragHint: '按住卡片可拖动，位置会被记住。它只是视图状态，永远不改变依赖关系。',
-      graphDoor: '打开画布', graphDoorHint: '下一步要装配？画布只读地画关系，也老实说哪些真跑过。',
+      graphDragHint: '拖卡片移动，位置会记住。',
+      graphDoor: '打开画布', graphDoorHint: '装配和跑图都在画布页。',
       flowRan: '跑完。已验证：', flowRanVerify: '重验完。已验证：',
       flyTitle: '从这里继续', flyReward: '已晋升',
-      flyNone: '还没有可推荐的——攒到 2 次验证过、且没有红，才会进推荐。',
+      flyNone: '两次验证、零红。',
       flyCost: '每绿卡成本', flyCostUnknown: '成本未知', flyResume: '继续这条',
       flyFilled: '模板已填进表单。', flyMissing: '那个模板已经没了，什么都没填。', moreCanvas: '画布', moreHistory: '历史运行', moreAudit: '审计时间线',
       memoryDecisions: '最近判断', running: '运行中',
@@ -119,40 +119,40 @@ window.__ModuleLoader__.load({
       runEmpty: 'Nothing is running. Compose the first task.',
       goToTask: 'Compose a task',
       currentRun: 'Current run', running: 'Running', done: 'Done', cancelled: 'Cancelled', failed: 'Failed',
-      waiting: 'Waiting for your answer', waitingHint: 'The session is parked on a question. Open it in workspace {cwd} to answer — the run continues right after that.',
-      noReplyYet: 'No finished reply yet — the session is still working.',
+      waiting: 'Waiting for your answer', waitingHint: 'It is waiting on a question in {cwd}.',
+      noReplyYet: 'No finished reply yet.',
       noReply: 'No reply captured for this run.',
       session: 'session', model: 'model', sessionWorkspace: 'session workspace', started: 'started',
       steps: 'steps', toolCalls: 'tool calls', duration: 'duration',
       cancelRun: 'Cancel run', unknown: 'unknown', notSet: '—',
-      orphanedHint: 'This run\'s session is no longer in the current Harness process (usually after a restart), so the panel cannot track it. The record stays in runs.json; you can archive it.',
+      orphanedHint: 'Session gone; record stays local.',
       archiveRun: 'Archive',
       orphanedChip: 'not tracked',
-      compose: 'Compose', composeHint: 'Fill the slots (or reuse a module), preview, then run. Nothing is sent before you confirm.',
+      compose: 'Compose', composeHint: 'Fill the slots, preview, then run.',
       goal: 'Goal', goalPlaceholder: 'What outcome should this work produce?',
       plan: 'Plan', planPlaceholder: 'Smallest useful next steps…',
       instruction: 'Instruction', instructionPlaceholder: 'Extra instruction for the session…',
       modelLabel: 'Model', defaultModel: 'Default model',
-      sessionTarget: 'Session target', newSession: 'New session (ungrouped)', sessionHint: 'Existing sessions keep their history; a new one lands in the ungrouped list.',
+      sessionTarget: 'Session target', newSession: 'New session (ungrouped)', sessionHint: 'Existing sessions keep their history.',
       insertModule: '+ module', useLast: 'Use last run', moduleTitle: 'Module title',
       saveModule: 'Save as module', moduleSaved: 'Module saved.', moduleFailed: 'Could not save module.',
-      moduleEmpty: 'No module of this kind yet — write a slot, then save it.', noModulesYet: 'No modules yet.', close: 'Close',
+      moduleEmpty: 'No modules yet.', noModulesYet: 'No modules yet.', close: 'Close',
       preview: 'Preview', clear: 'Clear', confirm: 'Run now', saving: 'Working…',
       previewReady: 'Ready to dispatch', showPrompt: 'Show the full prompt',
-      execOffHint: 'Execution disabled — set execution.enabled=true in workbench.config.json.',
-      noController: 'No sessionController in this profile; dispatch is unavailable.',
-      dispatchFailed: 'Dispatch failed.', modelsUnavailable: 'Model catalog unavailable; the choice stays local.',
+      execOffHint: 'Execution is off in workbench.config.json.',
+      noController: 'This profile has no sessionController.',
+      dispatchFailed: 'Dispatch failed.', modelsUnavailable: 'Model catalog unavailable.',
       reusedNotice: 'Fields copied from that run.',
       continuity: 'Continuity', mainline: 'Main line', stopped: 'Stopped at',
       next: 'Next', redlines: 'Guardrails', edit: 'Edit', save: 'Save', cancel: 'Cancel',
-      saveFailed: 'Save failed.', editHint: 'Writes this workbench’s state.json; recorded in the audit trail.',
+      saveFailed: 'Save failed.', editHint: 'Writes state.json and the audit trail.',
       tasks: 'Tasks', decisions: 'Decisions', audit: 'Audit trail', metrics: 'Metrics',
       noTasks: 'No tasks.', noDecisions: 'No decisions yet.', auditEmpty: 'No audit entries yet.',
       addDecision: 'Append', decisionPlaceholder: 'What was decided, why, what it costs…',
       decisionSaved: 'Appended.', decisionFailed: 'Could not append.',
       reportTitle: 'Run report', conclusion: 'Conclusion', points: 'Key points',
       artifacts: 'Artifacts', pending: 'Needs your answer', rawReply: 'Raw record',
-      reportNote: 'Machine summary — if it disagrees with the raw record, the raw record wins.',
+      reportNote: 'Machine summary; the raw record wins.',
       reportEmpty: 'Pick a run to see its report.', noArtifacts: 'No file paths were touched or produced.',
       noPending: 'Nothing is waiting on you.', noPoints: 'No list-style findings in this run.',
       reuseRun: 'Reuse this run', dispatches: 'dispatches', successRate: 'success rate',
@@ -165,13 +165,13 @@ window.__ModuleLoader__.load({
       templateTitle: 'Template name', saveTemplate: 'Save as template', deleteTemplate: 'Delete',
       templateSaved: 'Template saved.', templateRemoved: 'Template deleted.',
       templateFailed: 'Could not save the template.', templateNeedsGoal: 'A template needs a goal.',
-      templateHint: 'Picking a template fills every slot; saving one records this combination for next time.',
-      templateEmpty: 'No templates yet — assemble the slots once, then save them here.',
+      templateHint: 'A template fills all three slots at once.',
+      templateEmpty: 'No templates yet.',
       templateUses: 'used {n}×', templateRuns: 'template dispatches',
 
       canvasTitle: 'Canvas', tabCanvas: 'Canvas',
-      canvasHint: 'Read-only: this only shows how modules, templates and runs actually connect. Nothing can be dragged or edited here.',
-      canvasEmpty: 'Nothing to draw yet — save a template, then dispatch from it.',
+      canvasHint: 'Read-only: module → template → run.',
+      canvasEmpty: 'Save a template and dispatch once.',
       canvasModules: 'Modules', canvasRecipe: 'Template', canvasRuns: 'Runs',
       canvasNoModules: 'This template records no modules.', canvasNoRuns: 'Never dispatched from this template yet.',
       canvasMoreRuns: 'and {n} more', canvasMissingModule: 'module deleted',
@@ -188,40 +188,40 @@ window.__ModuleLoader__.load({
       runEmpty: '当前没有在跑的任务。先派一个。',
       goToTask: '去派发任务',
       currentRun: '当前运行', running: '运行中', done: '已完成', cancelled: '已取消', failed: '出错',
-      waiting: '等你回答', waitingHint: '会话停在提问上：去工作区 {cwd} 打开该会话回答，运行就会继续。',
-      noReplyYet: '还没有完成一轮，会话仍在工作。',
+      waiting: '等你回答', waitingHint: '会话在 {cwd} 等你回答。',
+      noReplyYet: '还没有完整的回复。',
       noReply: '这次运行没有捕获到回复。',
       session: '会话', model: '模型', sessionWorkspace: '会话工作区', started: '开始于',
       steps: '步', toolCalls: '次工具调用', duration: '耗时',
       cancelRun: '取消运行', unknown: '未知', notSet: '—',
-      orphanedHint: '这次运行的会话已不在当前 Harness 进程里（通常是重启过），面板无法再跟踪它。记录保留在 runs.json，可以归档。',
+      orphanedHint: '会话没了，记录还在。',
       orphanedChip: '失去跟踪',
       archiveRun: '归档',
-      compose: '派发', composeHint: '填槽位（或用模块），先预览再执行。不确认就不会发出任何东西。',
+      compose: '派发', composeHint: '填槽位，先预览再执行。',
       goal: '目标', goalPlaceholder: '这次工作要产出什么结果？',
       plan: '计划', planPlaceholder: '最小可行的下一步…',
       instruction: '指令', instructionPlaceholder: '给这次会话的补充指令…',
       modelLabel: '模型', defaultModel: '默认模型',
-      sessionTarget: '会话目标', newSession: '新会话（未分组）', sessionHint: '选已有会话会接着它原来的上下文；新建则出现在未分组里。',
+      sessionTarget: '会话目标', newSession: '新会话（未分组）', sessionHint: '选旧会话会接着它的上下文。',
       insertModule: '＋模块', useLast: '带入上次', moduleTitle: '模块标题',
       saveModule: '存为模块', moduleSaved: '已存为模块。', moduleFailed: '存模块失败。',
-      moduleEmpty: '还没有这类模块——先把槽位写好，再存成模块。', noModulesYet: '还没有模块。', close: '关闭',
+      moduleEmpty: '还没有模块。', noModulesYet: '还没有模块。', close: '关闭',
       preview: '生成预览', clear: '清空', confirm: '立即执行', saving: '处理中…',
       previewReady: '可以派发', showPrompt: '查看完整提示词',
-      execOffHint: '执行未启用——在工作区 workbench.config.json 中设置 execution.enabled=true。',
-      noController: '当前 profile 没有 sessionController，无法派发。',
+      execOffHint: '执行未启用：workbench.config.json。',
+      noController: '没有 sessionController。',
       dispatchFailed: '派发失败。', modelsUnavailable: '模型目录不可用；这里的选择只保存在本地。',
       reusedNotice: '已带入那一次的字段。',
       continuity: '接续状态', mainline: '当前主线', stopped: '上次停在',
       next: '下一步', redlines: '红线', edit: '编辑', save: '保存', cancel: '取消',
-      saveFailed: '保存失败。', editHint: '只写本工作区的 state.json，并记入审计。',
+      saveFailed: '保存失败。', editHint: '写回 state.json 并记审计。',
       tasks: '任务队列', decisions: '决策', audit: '审计时间线', metrics: '执行指标',
       noTasks: '暂无任务。', noDecisions: '还没有记录决策。', auditEmpty: '还没有审计记录。',
       addDecision: '追加', decisionPlaceholder: '决定了什么、为什么、代价是什么…',
       decisionSaved: '已追加。', decisionFailed: '追加失败。',
       reportTitle: '运行报告', conclusion: '结论', points: '要点',
       artifacts: '产物', pending: '需要你回答', rawReply: '原始记录',
-      reportNote: '机器摘要——与原始记录冲突时，以原始记录为准。',
+      reportNote: '机器摘要，冲突以原始记录为准。',
       reportEmpty: '选一次运行查看它的报告。', noArtifacts: '这次没有触碰或产出文件路径。',
       noPending: '没有需要你回答的事。', noPoints: '这次没有列表式结论。',
       reuseRun: '按这次再来一遍', dispatches: '次派发', successRate: '成功率',
@@ -234,13 +234,13 @@ window.__ModuleLoader__.load({
       templateTitle: '模板名字', saveTemplate: '存为模板', deleteTemplate: '删除',
       templateSaved: '模板已保存。', templateRemoved: '模板已删除。',
       templateFailed: '模板保存失败。', templateNeedsGoal: '模板至少要有目标。',
-      templateHint: '选一个模板会把三个槽位一次填好；把当前组合存下来，下次就不用重拼。',
-      templateEmpty: '还没有模板：先把槽位拼一次，再存成模板。',
+      templateHint: '选模板会一次填好三个槽位。',
+      templateEmpty: '还没有模板。',
       templateUses: '用了 {n} 次', templateRuns: '模板派发',
 
       canvasTitle: '画布', tabCanvas: '画布',
-      canvasHint: '只读：这里只显示「模块 → 模板 → 运行」的真实关系，不能拖动，也不能在这里改任何东西。',
-      canvasEmpty: '还没有可画的东西：先存一个模板，再用它派发一次。',
+      canvasHint: '只读：模块 → 模板 → 运行。',
+      canvasEmpty: '先存模板并派发一次。',
       canvasModules: '模块', canvasRecipe: '模板', canvasRuns: '运行',
       canvasNoModules: '这个模板没有记录模块。', canvasNoRuns: '还没用它派发过。',
       canvasMoreRuns: '还有 {n} 条', canvasMissingModule: '模块已删除',
@@ -314,7 +314,7 @@ window.__ModuleLoader__.load({
       .wb-run-row-goal{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
       .wb-run-row-meta{flex:0 0 auto;color:var(--dsw-alias-label-secondary);font-size:10px}
       .wb-run-row-tpl{flex:0 0 auto;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;border:1px solid color-mix(in srgb,var(--dsw-alias-brand-primary) 40%,var(--dsw-alias-border-l1));border-radius:999px;padding:1px 7px;color:var(--dsw-alias-brand-primary);font-size:10px;font-weight:650}
-      .wb-graph-viewport{max-height:420px;overflow:auto;margin:8px 0 12px;border:1px solid var(--dsw-alias-border-l1);border-radius:12px;background:var(--dsw-alias-bg-layer-2)}
+      .wb-graph-viewport{max-height:560px;overflow:auto;margin:8px 0 12px;border:1px solid var(--dsw-alias-border-l1);border-radius:12px;background:var(--dsw-alias-bg-layer-2)}
       .wb-graph-canvas{position:relative}
       .wb-graph-stage{position:absolute;top:0;left:0;border:none;background:transparent}
       .wb-graph-stage[data-dragging=true]{cursor:grabbing}
@@ -514,7 +514,7 @@ window.__ModuleLoader__.load({
       const [data, setData] = React.useState(null)
       const [error, setError] = React.useState(false)
       const [busy, setBusy] = React.useState(false)
-      const [tab, setTab] = React.useState('run')
+      const [tab, setTab] = React.useState('canvas')
       const [goal, setGoal] = React.useState('')
       const [plan, setPlan] = React.useState('')
       const [instruction, setInstruction] = React.useState('')
@@ -1108,20 +1108,6 @@ const boundSessionId = String(sessionId || '').trim()
       const memory = memoryPayload?.memory || null
       const gapOpen = Boolean(memory?.gap?.open)
       const sessionActive = Boolean(liveState?.running)
-      const activeMoment = momentOverride || (live || sessionActive ? 'work' : gapOpen ? 'close' : 'attach')
-
-      // The working moment reads the current session's own progress; the attach
-      // moment asks the Host which channel a task belongs to before any click.
-      React.useEffect(() => {
-        if (activeMoment !== 'work' || !boundSessionId) return undefined
-        loadLive()
-        const timer = setInterval(() => { loadLive() }, 5000)
-        return () => clearInterval(timer)
-      }, [activeMoment, boundSessionId])
-      React.useEffect(() => {
-        const timer = setTimeout(() => { decideChannel(syncText) }, 350)
-        return () => clearTimeout(timer)
-      }, [syncText])
       const statusLabel = status => status === 'running' ? t('running')
         : status === 'done' ? t('done')
           : status === 'cancelled' ? t('cancelled')
@@ -1132,33 +1118,29 @@ const boundSessionId = String(sessionId || '').trim()
         return text === key ? String(action || '—') : text
       }
 
+      // Four quiet tabs, canvas first: the panel is the work itself, so it takes
+      // the centre column and each tab shows only what that tab is for.
+      const TABS = [
+        ['canvas', t('tabCanvas')],
+        ['task', t('tabTask')],
+        ['history', t('tabHistory')],
+        ['workspace', t('tabWorkspace')],
+      ]
+
       const bar = h('header', { className: 'wb-bar' },
         h('div', { className: 'wb-bar-left' },
           h('span', { className: 'wb-dot', 'data-state': live || sessionActive ? 'running' : 'idle', 'aria-hidden': true }),
           h('strong', { className: 'wb-bar-title' }, t('title')),
           memoryPayload?.name ? h('span', { className: 'wb-muted' }, String(memoryPayload.name)) : null),
         h('div', { className: 'wb-bar-right' },
-          h('span', { className: 'wb-chip' }, canDispatch ? t('execOn') : t('execOff')),
-          h('button', { className: 'wb-button', type: 'button', onClick: load, disabled: busy }, busy ? t('loading') : t('refresh'))))
+          h('button', { className: 'wb-button wb-button-quiet', type: 'button', onClick: load, disabled: busy }, busy ? t('loading') : t('refresh'))))
 
-const momentButton = (id, label) => h('button', {
-        className: 'wb-moment', type: 'button',
-        'data-moment': id, 'data-active': activeMoment === id ? 'true' : 'false',
-        'aria-pressed': activeMoment === id,
-        title: t('momentHint'),
-        onClick: () => setMomentOverride(id),
-      }, label)
-
-      const moments = h('div', { className: 'wb-moments', role: 'group', 'aria-label': t('momentHint') },
-        momentButton('attach', t('momentAttach')),
-        momentButton('work', t('momentWork')),
-        momentButton('close', t('momentClose')),
-        momentOverride
-          ? h('button', {
-            className: 'wb-moment wb-moment-reset', type: 'button', title: t('momentHint'),
-            onClick: () => setMomentOverride(''),
-          }, '↺')
-          : null)
+      const tabs = h('nav', { className: 'wb-tabs', role: 'tablist' }, TABS.map(([id, label]) => h('button', {
+        key: id, type: 'button', role: 'tab', className: 'wb-tab',
+        'data-tab': id, 'data-active': tab === id ? 'true' : 'false',
+        'aria-selected': tab === id,
+        onClick: () => setTab(id),
+      }, label)))
 
       // ---- run tab -----------------------------------------------------------
       const runMeta = run => [
@@ -1557,7 +1539,7 @@ const momentButton = (id, label) => h('button', {
       // card slots, edges as curves between slot borders. That keeps the drawing
       // derived from the Host's validation instead of from DOM luck, and it means
       // a broken edge is drawn broken rather than hidden.
-      const GRAPH_CARD_W = 196
+      const GRAPH_CARD_W = 216
       const GRAPH_CARD_H = 98
       const GRAPH_GAP_X = 62
       const GRAPH_GAP_Y = 16
@@ -1838,8 +1820,7 @@ const momentButton = (id, label) => h('button', {
           h('span', { className: 'wb-chip' }, Math.round((viewState.zoom || 1) * 100) + '%'),
           h('button', { className: 'wb-button wb-button-quiet', type: 'button', onClick: () => zoomGraph(1), disabled: (viewState.zoom || 1) >= 1.6, title: t('graphZoomIn') }, '+'),
           h('button', { className: 'wb-button wb-button-quiet', type: 'button', onClick: arrangeGraph, disabled: graphBusy }, t('graphArrange'))),
-        h('p', { className: 'wb-hint' }, t('graphHint')),
-        h('p', { className: 'wb-note' }, t('graphDragHint')),        h('p', { className: 'wb-hint' }, t('graphHint')),
+        h('p', { className: 'wb-note' }, t('graphDragHint')),
         graphStage,
         graphNotice || flowNotice ? h('div', { className: 'wb-note' }, graphNotice || flowNotice) : null,
         h('div', { className: 'wb-actions', style: { justifyContent: 'flex-end' } },
@@ -1863,8 +1844,8 @@ const momentButton = (id, label) => h('button', {
           edgeList),
         h('details', { className: 'wb-prompt wb-details' },
           h('summary', null, t('graphAddNode')),
-          nodeForm),
-        edgeForm)
+          nodeForm,
+          edgeForm))
 
 
       const flyCard = h('section', { className: 'wb-card wb-fly' },
@@ -2026,48 +2007,49 @@ const momentButton = (id, label) => h('button', {
           h('button', { className: 'wb-button', type: 'button', onClick: load }, t('retry')))
       } else if (!data) {
         body = h('section', { className: 'wb-card' }, h('div', { className: 'wb-empty' }, t('loading')))
-      } else if (activeMoment === 'work') {
-        body = workBody
-      } else if (activeMoment === 'close') {
-        body = closeBody
+      } else if (tab === 'task') {
+        body = taskView
+      } else if (tab === 'history') {
+        body = h('div', null, latestRun ? h('div', null, runCard) : null, historyView)
+      } else if (tab === 'workspace') {
+        body = h('div', null, memoryCard,
+          h('details', { className: 'wb-prompt wb-details' }, h('summary', null, t('flyTitle')), flyCard),
+          h('details', { className: 'wb-prompt wb-details' }, h('summary', null, t('memoryDecisions')), decisionsView),
+          h('details', { className: 'wb-prompt wb-details' }, h('summary', null, t('moreAudit')), auditView),
+          h('details', { className: 'wb-prompt wb-details' }, h('summary', null, t('momentClose')), closeForm))
       } else {
-        body = attachBody
+        body = h('div', null, flowView,
+          h('details', { className: 'wb-prompt wb-details' }, h('summary', null, t('moreCanvas')), canvasView))
       }
 
       return h('div', { className: 'wb-page' }, h('style', null, CSS),
-        h('div', { className: 'wb-wrap' }, bar, moments, momentNotice ? h('div', { className: 'wb-note' }, momentNotice) : null, body))
+        h('div', { className: 'wb-wrap' }, bar, tabs, body))
     }
 
-    // The workbench is a right-column tab, not a main panel: it belongs to the
-    // conversation it is attached to and must never replace the chat column.
-    const WORKBENCH_TYPE = 'dsh-workbench/workbench'
-    const WORKBENCH_KIND = 'workbench'
+    // The workbench is a main-area page reached from the left rail. It is where
+    // the work happens, so it takes the centre column instead of squeezing into
+    // a side strip; chat comes back the same way, one click on the rail.
+    const PANEL_KEY = 'dsh-workbench'
+
+    const panelIcon = ({ size, active }) => h('svg', {
+      width: size, height: size, viewBox: '0 0 24 24', fill: 'none',
+      'aria-hidden': true, style: { display: 'block', opacity: active ? 1 : 0.78 },
+    },
+      h('rect', { x: 3, y: 4, width: 18, height: 16, rx: 3, stroke: 'currentColor', strokeWidth: 1.7 }),
+      h('path', { d: 'M7 9h4v6H7zM14 9h3M14 12h3M14 15h3', stroke: 'currentColor', strokeWidth: 1.7, strokeLinecap: 'round', strokeLinejoin: 'round' }))
 
     return {
-      inject: ['slots', 'locale', 'sidebarRightTabs'],
+      inject: ['slots', 'locale'],
       apply(ctx) {
         ctx.effect(() => ctx.locale.register('dshWorkbench', { en, zh }), 'dsh-workbench locales')
         const t = ctx.locale.bind('dshWorkbench')
-        ctx.effect(() => ctx.sidebarRightTabs.register({
-          id: WORKBENCH_TYPE,
-          kind: WORKBENCH_KIND,
-          priority: 'extension',
-          title: () => t('title'),
-          guide: [{
-            id: 'workbench',
-            order: 30,
-            title: () => t('title'),
-            description: () => t('guideDescription'),
-          }],
-        }), 'dsh-workbench: tab type')
-        ctx.effect(() => ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register({
-          name: 'sidebar.right.pane.tab',
-          key: WORKBENCH_TYPE,
-          locale: 'dshWorkbench',
-          // The slot tells a session-scoped body which session it renders, so
-          // sync work knows where it belongs without guessing from the URL.
-          inject: sessionId => ({ sessionId }),
-        }, props => h(WorkbenchPanel, { ...props, t }))), 'dsh-workbench: tab body')
+        ctx.slots.inject('main', () => ctx.slots.register({
+          name: 'main', key: PANEL_KEY, locale: 'dshWorkbench',
+        }, props => h(WorkbenchPanel, { ...props, t })))
+        ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
+          name: 'sidebar.panellist', id: PANEL_KEY, order: 25, locale: 'dshWorkbench',
+          label: () => t('title'),
+        }, panelIcon))
         return () => {}
       },
     }
