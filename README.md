@@ -1,12 +1,17 @@
 # DSH Workbench
 
-A small Cordis bundle for DeepSeek Harness that adds a **Workbench command center** panel to the Web UI. It displays persistent workbench state, recent decisions, relay task cards, token-ledger rows, configurable primary/secondary memory previews, and a local command draft. It can edit the continuity fields, append decisions, record every write in an audit trail, and — when the workspace explicitly opts in — dispatch one composed instruction into a real DSH Session through the Host `sessionController`. It never calls a provider directly and never bypasses DSH permissions or the session lifecycle.
+A small Cordis bundle for DeepSeek Harness that adds a **Workbench command center** panel to the Web UI. It is organised as four tabs, each answering one question — *is work happening now* (run), *how do I assemble the next task* (task), *what did past runs actually produce* (history), and *what is the long-lived context* (workspace). Dispatches are assembled from reusable modules and can target an existing session instead of always creating one; run records are digested into conclusion / artifacts / open questions / stats with the raw reply kept behind a disclosure. It never calls a provider directly and never bypasses DSH permissions or the session lifecycle.
 
 ## Features
 
-- Adds a `Workbench` main panel and sidebar entry.
+- Adds a `Workbench` main panel and sidebar entry, split into four tabs: **Run**, **Task**, **History**, **Workspace**. Only the selected tab is rendered.
 - Provides a command-center draft form for goal, plan, instruction, and model; preview composes the exact prompt and shows whether dispatch is available.
 - Dispatches one instruction into a real DSH Session via `POST /dsh-workbench/api/dispatch` (Host `sessionController.create` → optional `selectModel` → `prompt`), with `GET /dsh-workbench/api/runs` for status/reply and `POST /dsh-workbench/api/runs/cancel` for cancellation. Dispatch is opt-in per workspace (`execution.enabled`), never silent, and audited.
+- Session targeting: `POST /api/dispatch` accepts an optional `sessionId`. When present it prompts that existing session (keeping its history and approvals) instead of creating a new one; `GET /api/sessions` lists dispatchable sessions with titles read from `session/title` events.
+- Reusable module library (`GET`/`POST /dsh-workbench/api/modules`, stored in `modules.json`): each goal/plan/instruction slot can be filled from a saved module, saved back as one, and modules used by a dispatch get their use counter bumped — the raw material for assembling task templates and, later, a canvas.
+- Derived run reports (`GET /dsh-workbench/api/report?runId=`): conclusion (first paragraph), key points (list items), artifacts (file paths recovered from `tool/call` arguments), open questions (interrogative sentences plus the waiting flag) and stats. Marked `derived` and always carries the raw reply for a disclosure — the panel shows the digest, never the log.
+- History tab renders those reports per selected run and offers "reuse this run" to refill the task slots.
+- Workspace tab turns `decisions.md` into labelled cards (background / decision / cost), the audit trail into a day-grouped timeline with readable action names, and metrics into figures derived from `runs.json` only (dispatch count, success rate, average duration, average steps) — no unexplainable placeholder numbers.
 - Editable continuity: mainline, checkpoint, next actions and red lines can be saved from the panel (`POST /dsh-workbench/api/state-edit`), and decisions can be appended (`POST /dsh-workbench/api/decision-add`).
 - Append-only audit trail: every panel write records time, action, request id and a compact before/after summary in `audit.jsonl`, shown in the panel via `GET /dsh-workbench/api/audit`.
 - Lists the profile's real model routes in the selector via the read-only `llm` service catalog (`/dsh-workbench/api/models`), pre-selecting the current default model without calling it.
@@ -43,7 +48,7 @@ The plugin searches upward from its installed package directory for a directory 
 - `DSH_WORKBENCH_DIR`: directory containing `state.json`, `state.md`, and optional `decisions.md` / `ledger.json` / `audit.jsonl` / `runs.json`.
 - `DSH_RELAY_DIR`: directory containing optional `ledger.csv` and `cards/`.
 
-When no data is found, the panel remains available and presents empty states. The Host `wb_set` tool creates the workbench directory if needed. Panel edits update `state.json` only (they do not rewrite the richer `state.md` prose) and appends to `audit.jsonl`. Dispatched runs are recorded in `runs.json` (last 50).
+When no data is found, the panel remains available and presents empty states. The Host `wb_set` tool creates the workbench directory if needed. Panel edits update `state.json` only (they do not rewrite the richer `state.md` prose) and appends to `audit.jsonl`. Dispatched runs are recorded in `runs.json` (last 50) with the goal/plan/instruction so the task tab can refill them; saved modules live in `modules.json` (last 200).
 
 Dispatching is opt-in per workspace in `workbench.config.json`:
 
@@ -60,13 +65,14 @@ Dispatching is opt-in per workspace in `workbench.config.json`:
 
 ## Panel layout
 
-The panel is ordered by what a half-idle user needs first:
+The panel is split into four tabs; only the selected tab exists in the DOM.
 
-1. **Current run** — status, session id, model, start time, step/tool-call counts and the captured reply. It is rebuilt from `runs.json` on every mount, so switching panels and coming back never loses a running session. A run parked on a question says so and names the workspace that holds the session.
-2. **Recent runs** — compact history from `runs.json`; selecting a row shows that run's captured reply.
-3. **Dispatch** — goal, plan, instruction and model, then `Preview` → `Run now`. Nothing is sent before the explicit confirm.
-4. **Continuity** — mainline, checkpoint, next actions and red lines, with one `Edit` action.
-5. **Workspace details** — tasks, decisions, audit trail and metrics, collapsed by default so the two things that matter (is it running, what did it say) stay on the first screen.
+| Tab | Answers | Content |
+| --- | --- | --- |
+| Run | Is work happening right now? | Current run card rebuilt from `runs.json` on every mount (so switching panels never loses it): status, waiting-for-answer hint, session/model/workspace, elapsed time, step and tool-call counts, the report's conclusion, cancel, and a jump to the full report. |
+| Task | How do I assemble the next dispatch? | Session target (new session → ungrouped, or an existing one), goal/plan/instruction slots, each with `+ module` (insert a saved module) and `Save as module`, `Use last run` to refill from the previous dispatch, then `Preview` → `Run now`. Nothing is sent before the explicit confirm. |
+| History | What did past runs produce? | Selectable run list plus that run's report: conclusion, key points, artifacts (path + producing tool), open questions, stats, and the raw reply behind a disclosure. `Reuse this run` refills the task slots. |
+| Workspace | What is the long-lived context? | Continuity (mainline / stopped at / next / guardrails) with one `Edit`, decisions as labelled cards, the audit trail as a day-grouped timeline, metrics derived from `runs.json`, and the task queue. |
 
 ## Security and privacy
 
@@ -81,6 +87,6 @@ node ._host_check.mjs
 node ._client_check.mjs
 ```
 
-`._host_check.mjs` runs the Host bundle against a mocked `sessionController` and the real filesystem: registration, guards, dispatch lifecycle (`create → selectModel → prompt`), run status/reply, cancellation, live progress annotation (`steps`/`toolCalls`/`waiting`), and the audit actions (`dispatch.start/done/cancel`) are all asserted — including that `prompt` is called with a real `AbortSignal`, matching the Host API's `prompt(request, signal)` contract, and that a finished or cancelled run never keeps the `waiting` flag (the panel renders that chip only while the run is running). `._client_check.mjs` mounts the panel headlessly and asserts the run card is derived from `runs.json` (not from the dispatch response, which is what made the card vanish on remount), that selecting an older run renders its reply, that tasks/decisions/audit stay collapsed until opened, plus the continuity editor and sidebar icon.
+`._host_check.mjs` runs the Host bundle against a mocked `sessionController` and the real filesystem: registration, guards, dispatch lifecycle (`create → selectModel → prompt`), session targeting (an explicit `sessionId` prompts that session and never calls `create`), the module library (save / upsert by kind+title / list / remove / use counter / 400-404-405-413 guards), the derived report (conclusion, points, artifacts from `tool/call` arguments, open questions, stats, 404 for an unknown run), run status/reply, cancellation, live progress annotation (`steps`/`toolCalls`/`waiting`), and the audit actions — including that `prompt` is called with a real `AbortSignal`, matching the Host API's `prompt(request, signal)` contract, and that a finished or cancelled run never keeps the `waiting` flag. `._client_check.mjs` mounts the panel headlessly and asserts the four tabs really switch the rendered subtree (one body at a time), that the task tab prefills from the last run, inserts a saved module, carries the chosen session id in the preview request, and declares the inserted module id; that the history tab renders conclusion/points/artifacts/pending with the raw reply behind a disclosure; and that the workspace tab renders decision cards, a day-grouped audit timeline, metrics from `runs.json`, and the continuity editor — plus the sidebar icon.
 
 Then install the package in a test profile (or a profile you explicitly designate for testing), inspect the live `main` and `sidebar.panellist` slots, and verify the panel in the connected Harness Web UI. A successful package installation alone does not prove that a browser rendered the panel.

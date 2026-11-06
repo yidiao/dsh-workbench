@@ -24,6 +24,7 @@ const registered = []
 let requestRejection = null
 let streamCalls = 0
 let sessionRunning = true
+let failCancel = false
 const dispatchCalls = { create: [], selectModel: [], prompt: [], cancel: [] }
 const createdSessionId = 'sess-harness-1'
 const mockSessionController = {
@@ -38,17 +39,24 @@ const mockSessionController = {
     dispatchCalls.prompt.push(request)
     return { accepted: true }
   },
-  cancel: async (request) => { dispatchCalls.cancel.push(request); return { accepted: true } },
-  list: async () => [{ sessionId: createdSessionId, agentAvailable: true, running: sessionRunning, blank: false, updatedAt: Date.now() }],
+  cancel: async (request) => {
+    dispatchCalls.cancel.push(request)
+    if (failCancel) throw new Error('session 不在当前 Harness 中')
+    return { accepted: true }
+  },
+  list: async () => [
+    { sessionId: createdSessionId, agentAvailable: true, running: sessionRunning, blank: false, updatedAt: Date.now() },
+    { sessionId: 'sess-titled', agentAvailable: true, running: false, blank: false, updatedAt: Date.now() - 60000 },
+  ],
 }
 let sessionWaiting = false
 const sessionEvents = [
   { type: 'turn/start', time: 1793945000000, data: {} },
   { type: 'step/start', time: 1793945001000, data: {} },
-  { type: 'tool/call', time: 1793945002000, data: { name: 'ops_bash', callId: 'call-1' } },
+  { type: 'tool/call', time: 1793945002000, data: { name: 'ops_bash', callId: 'call-1', arguments: { cmd: 'node D:/workbench/out/result.md' } } },
   { type: 'tool/result', time: 1793945003000, data: { callId: 'call-1' } },
   { type: 'step/start', time: 1793945004000, data: {} },
-  { type: 'assistant/message', time: 1793945005000, data: { message: { content: [{ type: 'text', text: '完成：测试回复。' }] } } },
+  { type: 'assistant/message', time: 1793945005000, data: { message: { content: [{ type: 'text', text: '完成：测试回复。\n\n- 结论一\n- 结论二\n\n需要确认：是否继续？' }] } } },
   { type: 'turn/end', time: 1793945006000, data: { reason: { kind: 'end_turn' } } },
 ]
 const waitingEvents = [
@@ -56,9 +64,16 @@ const waitingEvents = [
   { type: 'step/start', time: 1793945001000, data: {} },
   { type: 'tool/call', time: 1793945002000, data: { name: 'ask_user_question', callId: 'call-9' } },
 ]
+const titledEvents = [
+  { type: 'session/title', time: 1793944000000, data: { title: '已有的会话标题' } },
+  { type: 'turn/start', time: 1793944001000, data: {} },
+  { type: 'turn/end', time: 1793944002000, data: { reason: { kind: 'end_turn' } } },
+]
 const mockSessions = {
   get: (id) => id === createdSessionId ? {
     snapshotEvents: () => (sessionWaiting ? waitingEvents : sessionEvents),
+  } : id === 'sess-titled' ? {
+    snapshotEvents: () => titledEvents,
   } : undefined,
 }
 const mockLlm = {
@@ -93,6 +108,9 @@ const auditRoute = registered.find(r => r.regType === 'web' && r.path === '/dsh-
 const dispatchRoute = registered.find(r => r.regType === 'web' && r.path === '/dsh-workbench/api/dispatch')
 const runsRoute = registered.find(r => r.regType === 'web' && r.path === '/dsh-workbench/api/runs')
 const runsCancelRoute = registered.find(r => r.regType === 'web' && r.path === '/dsh-workbench/api/runs/cancel')
+const sessionsRoute = registered.find(r => r.regType === 'web' && r.path === '/dsh-workbench/api/sessions')
+const modulesRoute = registered.find(r => r.regType === 'web' && r.path === '/dsh-workbench/api/modules')
+const reportRoute = registered.find(r => r.regType === 'web' && r.path === '/dsh-workbench/api/report')
 const toolNames = registered.filter(r => r.regType === 'tool').map(r => r.name)
 
 console.log('registered count:', registered.length)
@@ -101,12 +119,13 @@ console.log('preview paths:', previewRoute?.path, previewVersionRoute?.path)
 console.log('models path:', modelsRoute?.path)
 console.log('write paths:', stateEditRoute?.path, decisionRoute?.path, auditRoute?.path)
 console.log('dispatch paths:', dispatchRoute?.path, runsRoute?.path, runsCancelRoute?.path)
+console.log('v0.6 paths:', sessionsRoute?.path, modulesRoute?.path, reportRoute?.path)
 console.log('tool names:', toolNames)
 
 const ok =
   route && route.path === '/dsh-workbench/api/state-v2' &&
   previewRoute && previewVersionRoute && modelsRoute && stateEditRoute && decisionRoute && auditRoute &&
-  dispatchRoute && runsRoute && runsCancelRoute &&
+  dispatchRoute && runsRoute && runsCancelRoute && sessionsRoute && modulesRoute && reportRoute &&
   ['wb_get', 'wb_set', 'wb_close', 'wb_models', 'wb_runs'].every(n => toolNames.includes(n)) &&
   toolNames.length === 5
 if (!ok) { console.error('FAIL: registration mismatch'); process.exit(1) }
@@ -479,6 +498,180 @@ if (cancelledWaiting?.status !== 'cancelled' || cancelledWaiting?.waiting !== fa
   console.error('FAIL: cancel left the waiting flag set', cancelledWaiting)
   process.exit(1)
 }
+
+// --- v0.6: session targeting, module library, derived report ----------------
+const fail = message => { console.error('FAIL:', message); process.exit(1) }
+
+const sessionsRes = response()
+await sessionsRoute.handler(getReq(sessionsRoute.path), sessionsRes)
+if (sessionsRes.statusCode !== 200) fail('sessions status ' + sessionsRes.statusCode)
+const sessionsPayload = JSON.parse(sessionsRes.body)
+if (sessionsPayload.ok !== true || sessionsPayload.available !== true) fail('sessions payload ' + sessionsRes.body)
+const titledSession = sessionsPayload.items.find(item => item.sessionId === 'sess-titled')
+if (!titledSession) fail('titled session missing from list')
+if (titledSession.title !== '已有的会话标题') fail('session title not read from session/title events: ' + JSON.stringify(titledSession))
+if (typeof titledSession.running !== 'boolean' || typeof titledSession.updatedAt !== 'number') fail('session flags not normalized')
+
+// Dispatching with an explicit sessionId must reuse that session and skip create.
+const createCountBefore = dispatchCalls.create.length
+const existingRes = response()
+await dispatchRoute.handler(postReq(dispatchRoute.path, {
+  goal: '指定会话派发',
+  model: 'deepseek-official/deepseek-flash',
+  sessionId: 'sess-titled',
+}), existingRes)
+if (existingRes.statusCode !== 200) fail('existing-session dispatch status ' + existingRes.body)
+const existingRun = JSON.parse(existingRes.body).run
+if (existingRun.sessionId !== 'sess-titled') fail('run did not target the given session: ' + existingRun.sessionId)
+if (existingRun.sessionMode !== 'existing') fail('sessionMode should be existing, got ' + existingRun.sessionMode)
+if (dispatchCalls.create.length !== createCountBefore) fail('created a session despite an explicit target')
+if (dispatchCalls.prompt.at(-1)?.sessionId !== 'sess-titled') fail('prompt did not target the given session')
+
+// Module library: save / list / upsert / remove, all audited and guarded.
+const saveRes = response()
+await modulesRoute.handler(postReq(modulesRoute.path, {
+  kind: 'goal', title: '统计行数', text: '统计 _workbench 下 md 行数并给出 top3',
+}), saveRes)
+if (saveRes.statusCode !== 200) fail('module save status ' + saveRes.body)
+const savedModule = JSON.parse(saveRes.body)
+if (!savedModule.module?.id || savedModule.module.uses !== 0) fail('saved module shape ' + saveRes.body)
+if (savedModule.items.length !== 1) fail('module list should hold one item')
+
+const modulesListRes = response()
+await modulesRoute.handler(getReq(modulesRoute.path), modulesListRes)
+const modulesListed = JSON.parse(modulesListRes.body)
+if (!Array.isArray(modulesListed.items) || modulesListed.items.length !== 1) fail('module list GET ' + modulesListRes.body)
+const moduleId = savedModule.module.id
+
+const saveAgainRes = response()
+await modulesRoute.handler(postReq(modulesRoute.path, {
+  kind: 'goal', title: '统计行数', text: '统计 _workbench 下 md 行数并给出 top5',
+}), saveAgainRes)
+const savedAgain = JSON.parse(saveAgainRes.body)
+if (savedAgain.items.length !== 1) fail('same kind+title duplicated instead of updating')
+if (savedAgain.module.id !== moduleId) fail('upsert changed the module id')
+if (!savedAgain.module.text.includes('top5')) fail('upsert did not update the text')
+
+const badKindRes = response()
+await modulesRoute.handler(postReq(modulesRoute.path, { kind: 'other', title: 'x', text: 'y' }), badKindRes)
+if (badKindRes.statusCode !== 400) fail('invalid module kind accepted: ' + badKindRes.statusCode)
+const noTitleRes = response()
+await modulesRoute.handler(postReq(modulesRoute.path, { kind: 'goal', title: '', text: 'y' }), noTitleRes)
+if (noTitleRes.statusCode !== 400) fail('empty module title accepted')
+const bigModuleRes = response()
+await modulesRoute.handler(postReq(modulesRoute.path, { kind: 'goal', title: 'big', text: 'x'.repeat(70 * 1024) }), bigModuleRes)
+if (bigModuleRes.statusCode !== 413) fail('oversized module body accepted')
+const moduleMethodRes = response()
+await modulesRoute.handler({ ...getReq(modulesRoute.path), method: 'PUT' }, moduleMethodRes)
+if (moduleMethodRes.statusCode !== 405) fail('modules route accepted PUT')
+
+// A dispatch that names modules bumps their use counter: that is the raw data
+// the future canvas needs to rank reusable pieces.
+const useRes = response()
+await dispatchRoute.handler(postReq(dispatchRoute.path, {
+  goal: '用了模块的派发', moduleIds: [moduleId], model: 'deepseek-official/deepseek-flash',
+}), useRes)
+if (useRes.statusCode !== 200) fail('module-using dispatch failed ' + useRes.body)
+const modulesAfterUse = JSON.parse(readFileSync(join(tempWorkspace, 'modules.json'), 'utf8'))
+if (modulesAfterUse.items[0].uses !== 1) fail('module use counter not bumped: ' + JSON.stringify(modulesAfterUse.items[0]))
+
+const removeRes = response()
+await modulesRoute.handler(postReq(modulesRoute.path, { id: moduleId, remove: true }), removeRes)
+if (removeRes.statusCode !== 200) fail('module remove status ' + removeRes.body)
+if (JSON.parse(removeRes.body).items.length !== 0) fail('module not removed')
+const missingRemoveRes = response()
+await modulesRoute.handler(postReq(modulesRoute.path, { id: 'mod_missing', remove: true }), missingRemoveRes)
+if (missingRemoveRes.statusCode !== 404) fail('removing an absent module should be 404')
+
+// The report is the panel's payload: it must be a digest, never the raw text.
+const reportRes = response()
+await reportRoute.handler(getReq(reportRoute.path + '?runId=' + encodeURIComponent(run.runId)), reportRes)
+if (reportRes.statusCode !== 200) fail('report status ' + reportRes.body)
+const report = JSON.parse(reportRes.body)
+if (report.ok !== true || report.derived !== true) fail('report must be marked as a derived summary')
+if (report.conclusion !== '完成：测试回复。') fail('conclusion is not the first paragraph: ' + JSON.stringify(report.conclusion))
+if (!Array.isArray(report.points) || report.points.length !== 2) fail('points not extracted: ' + JSON.stringify(report.points))
+if (!report.points.includes('结论二')) fail('points content wrong: ' + JSON.stringify(report.points))
+if (!report.pending.some(item => item.includes('需要确认'))) fail('pending question not extracted: ' + JSON.stringify(report.pending))
+if (!report.artifacts.some(item => item.path === 'D:/workbench/out/result.md' && item.tool === 'ops_bash')) {
+  fail('artifact path not extracted from tool/call: ' + JSON.stringify(report.artifacts))
+}
+if (report.artifacts.length !== 1) fail('artifact list not deduplicated: ' + JSON.stringify(report.artifacts))
+if (!String(report.reply).includes('需要确认：是否继续？')) fail('raw reply not carried for the disclosure')
+if (report.stats.toolCalls !== 1 || report.stats.steps !== 2) fail('report stats wrong: ' + JSON.stringify(report.stats))
+if (report.run.goal !== '闭环测试：派发一次真实任务') fail('report run identity wrong: ' + report.run.goal)
+
+// A run that has not finished yet says so instead of inventing a conclusion.
+const liveReportRes = response()
+await reportRoute.handler(getReq(reportRoute.path + '?runId=' + encodeURIComponent(existingRun.runId)), liveReportRes)
+const liveReport = JSON.parse(liveReportRes.body)
+if (!String(liveReport.conclusion).includes('运行中')) fail('live run report should admit it has no conclusion: ' + liveReport.conclusion)
+
+// The default report is the most recent run, and an unknown id is a real 404.
+const latestReportRes = response()
+await reportRoute.handler(getReq(reportRoute.path), latestReportRes)
+const latestReport = JSON.parse(latestReportRes.body)
+const storedIds = JSON.parse(readFileSync(join(tempWorkspace, 'runs.json'), 'utf8')).items.map(item => item.runId)
+if (latestReport.ok !== true || !storedIds.includes(latestReport.run?.runId)) {
+  fail('default report did not resolve to a stored run: ' + latestReportRes.body)
+}
+const missingReportRes = response()
+await reportRoute.handler(getReq(reportRoute.path + '?runId=run_missing'), missingReportRes)
+if (missingReportRes.statusCode !== 404) fail('unknown runId should be 404, got ' + missingReportRes.statusCode)
+
+// A run whose session this Host no longer lists must not stay "running" as a
+// lie: it is flagged, and archiving closes it locally (no fake cancellation).
+const runsPath = join(tempWorkspace, 'runs.json')
+const storedForGhost = JSON.parse(readFileSync(runsPath, 'utf8'))
+storedForGhost.items.unshift({
+  runId: 'run_ghost', sessionId: 'session-ghost', goal: '重启前派发的任务',
+  model: 'deepseek-official/deepseek-flash', status: 'running', cwd: tempWorkspace,
+  createdAt: Date.now() - 3600000, updatedAt: Date.now() - 3600000,
+})
+writeFileSync(runsPath, JSON.stringify(storedForGhost, null, 2))
+const ghostListRes = response()
+await runsRoute.handler(getReq(runsRoute.path), ghostListRes)
+const ghostRun = JSON.parse(ghostListRes.body).items.find(item => item.runId === 'run_ghost')
+if (!ghostRun) fail('ghost run disappeared from runs.json')
+if (ghostRun.orphaned !== true) fail('untracked running run not flagged as orphaned: ' + JSON.stringify(ghostRun))
+if (ghostRun.status !== 'running') fail('orphaned run should keep its recorded status until archived')
+
+const ghostReportRes = response()
+await reportRoute.handler(getReq(reportRoute.path + '?runId=run_ghost'), ghostReportRes)
+const ghostReport = JSON.parse(ghostReportRes.body)
+if (!Array.isArray(ghostReport.pending)) fail('report should stay printable for an orphaned run')
+
+const archiveRes = response()
+await runsCancelRoute.handler(postReq(runsCancelRoute.path, { runId: 'run_ghost', archive: true }), archiveRes)
+if (archiveRes.statusCode !== 200) fail('archive status ' + archiveRes.body)
+const archived = JSON.parse(archiveRes.body).run
+if (archived.status !== 'cancelled' || archived.orphaned !== false || !archived.archivedAt) {
+  fail('archive did not close the run locally: ' + JSON.stringify(archived))
+}
+const promptCountBeforeArchive = dispatchCalls.prompt.length
+if (dispatchCalls.prompt.length !== promptCountBeforeArchive) fail('archive must not touch the session')
+
+// The real cancel path is unchanged: when the session itself refuses, the route
+// reports 409 instead of pretending the run was cancelled.
+failCancel = true
+const brokenCancelRes = response()
+await runsCancelRoute.handler(postReq(runsCancelRoute.path, { runId: 'run_ghost' }), brokenCancelRes)
+failCancel = false
+if (brokenCancelRes.statusCode !== 409) {
+  fail('failed cancellation should be 409, got ' + brokenCancelRes.statusCode + ' ' + brokenCancelRes.body)
+}
+
+const auditV6Res = response()
+await auditRoute.handler(getReq(auditRoute.path + '?limit=30'), auditV6Res)
+const auditV6Actions = JSON.parse(auditV6Res.body).entries.map(entry => entry.action)
+for (const action of ['module.save', 'module.remove']) {
+  if (!auditV6Actions.includes(action)) fail('audit missing ' + action)
+}
+
+console.log('sessions:', sessionsPayload.items.length, '| titled ok | existing-session dispatch ok')
+console.log('modules: save/upsert/list/remove ok | use counter ok')
+console.log('report: conclusion ok, points', report.points.length, ', artifacts', report.artifacts.length, ', pending', report.pending.length)
+console.log('v0.6 guards: 400/404/405/413 enforced')
 
 console.log('dispatch:', run.runId, '| session:', run.sessionId, '| dry-run ok | disabled gate ok | cancel ok')
 console.log('dispatch guards: 405/400/401/403 enforced')

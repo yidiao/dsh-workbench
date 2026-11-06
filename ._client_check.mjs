@@ -1,8 +1,8 @@
-// Headless harness for the CLIENT bundle (client.js).
-// Proves the bundle registers a 'sidebar.panellist' entry with id 'dsh-workbench'
-// AND that the 'main' panel mounts, fetches its read-only payloads, renders the
-// continuity editor and audit trail, and that opening the editor produces the
-// expected form controls.
+// Headless harness for the CLIENT bundle (client.js), v0.6.
+// Proves: the four tabs really switch the rendered subtree, the task tab can be
+// assembled from a saved module and targets a chosen session, the history tab
+// paints a derived report with the raw record folded away, and the workspace tab
+// carries continuity / decision cards / audit timeline / real metrics.
 
 let captured = null
 globalThis.window = { __ModuleLoader__: { load: (spec) => { captured = spec } } }
@@ -11,9 +11,6 @@ const h = (type, props, ...children) => ({
   type, props: { ...(props || {}), children: children.flat().filter(c => c !== false && c != null) },
 })
 
-// Minimal hook runtime: useState keeps values between manual renders, so the
-// panel can be rendered once (loading), allowed to settle, then rendered again
-// with fetched data.
 let hookStates = []
 let hookIndex = 0
 const React = {
@@ -45,7 +42,7 @@ const payloads = {
       red_lines: ['不绕过权限'],
       updated: '2026-10-31T00:00:00.000Z',
     },
-    decisions: '### 2026-10-31\n决策一',
+    decisions: '### 2026-10-31T00:00:00.000Z\n面板改成标签页\n背景：所有功能挤在一屏\n决定：运行/任务/历史/工作区\n代价：需要多点一次',
     tasks: [{ id: 'T-001', status: '绿', goal: '测试任务' }],
     ledger: { rows: [], totalTokens: 0, greenCards: 1 },
     execution: { enabled: true, cwd: 'D:/workspace', controller: true },
@@ -58,10 +55,11 @@ const payloads = {
         runId: 'run_A', sessionId: 'session-aaa', goal: '统计 md 行数 top3',
         model: 'deepseek-flash', status: 'running', cwd: 'D:/AI Pj',
         createdAt: 1793944774996, updatedAt: 1793944774996, steps: 6, toolCalls: 11,
+        orphaned: true,
       },
       {
         runId: 'run_B', sessionId: 'session-bbb', goal: '上一条已完成的任务',
-        model: 'deepseek-flash', status: 'done', cwd: 'D:/AI Pj',
+        model: 'deepseek-flash', status: 'done', cwd: 'D:/AI Pj', plan: '步骤B', instruction: '注意B',
         createdAt: 1793944000000, updatedAt: 1793944100000, reply: '上一次运行的回复正文',
       },
     ],
@@ -74,11 +72,74 @@ const payloads = {
   },
   '/dsh-workbench/api/audit': {
     ok: true,
-    entries: [{ ts: '2026-10-31T00:00:00.000Z', action: 'state.edit', summary: 'mainline' }],
+    entries: [
+      { ts: '2026-10-31T10:00:03.000Z', action: 'dispatch.start', summary: 'session session-aaa · 统计 md 行数 top3' },
+      { ts: '2026-10-31T10:00:09.000Z', action: 'state.edit', summary: 'mainline' },
+    ],
+  },
+  '/dsh-workbench/api/sessions': {
+    ok: true,
+    available: true,
+    items: [
+      { sessionId: 'session-aaa', title: '正在跑的会话', running: true, blank: false, updatedAt: 1793944774996 },
+      { sessionId: 'session-ccc', title: '', running: false, blank: false, updatedAt: 1793944000000 },
+    ],
+  },
+  '/dsh-workbench/api/modules': {
+    ok: true,
+    items: [{ id: 'mod_1', kind: 'goal', title: '统计行数模块', text: '模块正文：统计 md 行数并给出 top3', uses: 2 }],
   },
 }
-globalThis.fetch = async (url) => {
-  const path = String(url).split('?')[0]
+
+const reports = {
+  run_A: {
+    ok: true, derived: true, note: '机器摘要：与原文不一致时以原文为准。',
+    run: {
+      runId: 'run_A', goal: '统计 md 行数 top3', status: 'running', model: 'deepseek-flash',
+      sessionId: 'session-aaa', sessionMode: 'new', cwd: 'D:/AI Pj', plan: '', instruction: '', waiting: false,
+    },
+    conclusion: '这一轮还没有产出结论（运行中）。',
+    points: [], artifacts: [], pending: [],
+    stats: { durationMs: 1000, steps: 6, toolCalls: 11, messages: 0 },
+    reply: '',
+  },
+  run_B: {
+    ok: true, derived: true, note: '机器摘要：与原文不一致时以原文为准。',
+    run: {
+      runId: 'run_B', goal: '上一条已完成的任务', status: 'done', model: 'deepseek-flash',
+      sessionId: 'session-bbb', sessionMode: 'new', cwd: 'D:/AI Pj', plan: '步骤B', instruction: '注意B', waiting: false,
+    },
+    conclusion: '历史结论摘要',
+    points: ['要点一', '要点二'],
+    artifacts: [{ path: 'D:/out/report.md', tool: 'ops_bash' }],
+    pending: ['是否继续？'],
+    stats: { durationMs: 100000, steps: 3, toolCalls: 5, messages: 1 },
+    reply: '上一次运行的回复正文',
+  },
+}
+
+const requests = []
+globalThis.fetch = async (url, options) => {
+  const raw = String(url)
+  const path = raw.split('?')[0]
+  const body = options?.body ? JSON.parse(options.body) : null
+  requests.push({ path, method: options?.method || 'GET', body })
+  if (path === '/dsh-workbench/api/dispatch') {
+    return {
+      ok: true, status: 200,
+      json: async () => ({
+        ok: true, dryRun: body?.dryRun === true, available: true, executionEnabled: true,
+        prompt: '[DSH Workbench 任务]\n目标：' + String(body?.goal || ''), cwd: 'D:/workspace',
+        model: body?.model || '', sessionMode: body?.sessionId ? 'existing' : 'new', sessionId: body?.sessionId || '',
+      }),
+    }
+  }
+  if (path === '/dsh-workbench/api/report') {
+    const runId = new URL(raw, 'http://127.0.0.1').searchParams.get('runId') || 'run_A'
+    const payload = reports[runId]
+    if (!payload) return { ok: false, status: 404, json: async () => ({ ok: false, error: '没有这次运行的记录' }) }
+    return { ok: true, status: 200, json: async () => payload }
+  }
   const payload = payloads[path]
   if (!payload) return { ok: false, status: 404, json: async () => ({ ok: false }) }
   return { ok: true, status: 200, json: async () => payload }
@@ -112,10 +173,7 @@ console.log('main panel key:', main.spec.key)
 
 function render(el) {
   if (!el || typeof el !== 'object') return el
-  if (typeof el.type === 'function') {
-    const out = el.type(el.props || {})
-    return render(out)
-  }
+  if (typeof el.type === 'function') return render(el.type(el.props || {}))
   const kids = Array.isArray(el.props?.children) ? el.props.children.map(render) : el.props?.children
   return { ...el, props: { ...el.props, children: kids } }
 }
@@ -125,92 +183,179 @@ function renderPanel() {
   return render(main.renderFn({ size: 24, active: false }))
 }
 
-function findClass(node, cls) {
-  if (node && typeof node === 'object' && node.props?.className?.includes(cls)) return true
-  if (Array.isArray(node?.props?.children)) return node.props.children.some(c => findClass(c, cls))
-  return false
+function findAll(node, predicate, out = []) {
+  if (!node || typeof node !== 'object') return out
+  if (predicate(node)) out.push(node)
+  const kids = node.props?.children
+  if (Array.isArray(kids)) kids.forEach(kid => findAll(kid, predicate, out))
+  return out
 }
-
+const findClass = (node, cls) => findAll(node, n => n.props?.className?.includes?.(cls)).length > 0
+const findNode = (node, predicate) => findAll(node, predicate)[0] || null
 function findText(node, text) {
   if (typeof node === 'string') return node === text
   if (Array.isArray(node)) return node.some(c => findText(c, text))
   if (node && typeof node === 'object') return findText(node.props?.children, text)
   return false
 }
-
-function findNode(node, predicate) {
-  if (!node || typeof node !== 'object') return null
-  if (predicate(node)) return node
-  const kids = node.props?.children
-  if (Array.isArray(kids)) {
-    for (const kid of kids) {
-      const found = findNode(kid, predicate)
-      if (found) return found
-    }
+function includesText(node, text) {
+  const flat = []
+  const walk = value => {
+    if (typeof value === 'string') { flat.push(value); return }
+    if (Array.isArray(value)) { value.forEach(walk); return }
+    if (value && typeof value === 'object') walk(value.props?.children)
   }
-  return null
+  walk(node)
+  return flat.some(item => item.includes(text))
 }
-
 function textDump(node, out = []) {
   if (typeof node === 'string') { if (node.trim()) out.push(node.trim()); return out }
   if (Array.isArray(node)) { node.forEach(child => textDump(child, out)); return out }
   if (node && typeof node === 'object') textDump(node.props?.children, out)
   return out
 }
-
 function fail(message, tree) {
   console.error('FAIL:', message)
-  if (tree) console.error('rendered text:', JSON.stringify(textDump(tree).slice(0, 24)))
+  if (tree) console.error('rendered text:', JSON.stringify(textDump(tree).slice(0, 30)))
   process.exit(1)
+}
+const clickTab = (tree, id) => {
+  const button = findNode(tree, node => node.type === 'button' && node.props?.['data-tab'] === id)
+  if (!button) fail('no tab button for ' + id, tree)
+  button.props.onClick()
+}
+const clickButton = (tree, label) => {
+  const button = findNode(tree, node => node.type === 'button' && findText(node.props?.children, label))
+  if (!button) fail('no button labelled ' + label, tree)
+  button.props.onClick()
 }
 
 let tree = renderPanel()
-if (!findClass(tree, "wb-page")) fail("panel did not mount (.wb-page missing)", tree)
+if (!findClass(tree, 'wb-page')) fail('panel did not mount (.wb-page missing)', tree)
 
 // Let the read-only fetches settle, then render again with data present.
+await new Promise(resolve => setTimeout(resolve, 25))
+tree = renderPanel()
+
+// --- tabs: exactly one tab body is rendered ---------------------------------
+const tabIds = findAll(tree, n => n.type === 'button' && n.props?.['data-tab']).map(n => n.props['data-tab'])
+if (tabIds.join(',') !== 'run,task,history,workspace') fail('tab bar is not run/task/history/workspace: ' + tabIds.join(','), tree)
+if (findClass(tree, 'wb-run') === false) fail('run card missing on the run tab (not derived from runs.json)', tree)
+if (!findText(tree, '统计 md 行数 top3')) fail('newest run from runs.json not rendered', tree)
+// A run whose session this Host lost must say so and offer archiving, not a
+// cancellation that cannot possibly work.
+if (!findText(tree, 'orphanedChip')) fail('orphaned run not marked in the run card', tree)
+if (!includesText(tree, 'orphanedHint')) fail('orphaned run does not explain itself', tree)
+if (!findText(tree, 'archiveRun')) fail('orphaned run offers no archive action', tree)
+if (findText(tree, 'cancelRun')) fail('orphaned run still offers a cancel that cannot work', tree)
+if (findClass(tree, 'wb-compose')) fail('task form leaked into the run tab', tree)
+if (findClass(tree, 'wb-report')) fail('report card leaked into the run tab', tree)
+if (findClass(tree, 'wb-audit')) fail('audit leaked into the run tab', tree)
+
+// --- task tab: module assembly + session targeting --------------------------
+clickTab(tree, 'task')
+tree = renderPanel()
+if (!findClass(tree, 'wb-compose')) fail('task tab did not render the composer', tree)
+if (findClass(tree, 'wb-run')) fail('run card leaked into the task tab', tree)
+const goalInput = findNode(tree, n => n.type === 'input' && n.props?.id === 'wb-goal')
+if (!goalInput) fail('goal input missing', tree)
+// Prefilled from the previous dispatch: the form must not demand retyping.
+if (goalInput.props.value !== '统计 md 行数 top3') fail('goal not prefilled from the last run: ' + JSON.stringify(goalInput.props.value))
+const sessionSelect = findNode(tree, n => n.type === 'select' && n.props?.id === 'wb-session')
+if (!sessionSelect) fail('session target selector missing', tree)
+if (!(sessionSelect.props.children || []).some(child => child?.props?.value === 'session-ccc')) {
+  fail('sessions from /api/sessions not offered as targets', tree)
+}
+
+// Open the module picker on the goal slot and insert a saved module.
+const insertButtons = findAll(tree, n => n.type === 'button' && findText(n.props?.children, 'insertModule'))
+if (insertButtons.length < 3) fail('each slot should offer a module insert button, got ' + insertButtons.length, tree)
+insertButtons[0].props.onClick()
+tree = renderPanel()
+const picker = findNode(tree, n => n.props?.className?.includes?.('wb-picker'))
+if (!picker) fail('module picker did not open', tree)
+if (!includesText(picker, '统计行数模块')) fail('saved module not listed in the picker', tree)
+const pickerInsert = findNode(picker, n => n.type === 'button' && findText(n.props?.children, 'insertModule'))
+if (!pickerInsert) fail('picker has no insert button', tree)
+pickerInsert.props.onClick()
+tree = renderPanel()
+const goalAfterInsert = findNode(tree, n => n.type === 'input' && n.props?.id === 'wb-goal')
+if (!String(goalAfterInsert.props.value).includes('模块正文：统计 md 行数并给出 top3')) {
+  fail('module text was not inserted into the slot: ' + JSON.stringify(goalAfterInsert.props.value))
+}
+
+// Target an existing session, then preview: the request must carry its id.
+const sessionAfterRender = findNode(tree, n => n.type === 'select' && n.props?.id === 'wb-session')
+sessionAfterRender.props.onChange({ target: { value: 'session-ccc' } })
+tree = renderPanel()
+const taskForm = findNode(tree, n => n.type === 'form' && typeof n.props?.onSubmit === 'function' && findText(n.props?.children, 'preview'))
+if (!taskForm) fail('no preview submit button', tree)
+taskForm.props.onSubmit({ preventDefault() {} })
 await new Promise(resolve => setTimeout(resolve, 20))
 tree = renderPanel()
+const dispatchRequest = requests.filter(r => r.path === '/dsh-workbench/api/dispatch').pop()
+if (!dispatchRequest) fail('preview did not call the dispatch route', tree)
+if (dispatchRequest.body.sessionId !== 'session-ccc') fail('preview did not carry the chosen session: ' + JSON.stringify(dispatchRequest.body))
+if (dispatchRequest.body.dryRun !== true) fail('preview was not a dry run: ' + JSON.stringify(dispatchRequest.body))
+if (!Array.isArray(dispatchRequest.body.moduleIds) || dispatchRequest.body.moduleIds[0] !== 'mod_1') {
+  fail('inserted module was not declared on the dispatch: ' + JSON.stringify(dispatchRequest.body))
+}
+if (!findText(tree, 'previewReady')) fail('preview confirmation block not rendered', tree)
 
-// REGRESSION: the run card must come from runs.json, not from a dispatch
-// response held in component state — otherwise switching panels and coming
-// back silently loses the run that is still executing.
-if (!findNode(tree, node => node.props?.className?.includes?.("wb-run"))) fail("run card missing after load (not derived from runs.json)", tree)
-if (!findText(tree, "统计 md 行数 top3")) fail("newest run from runs.json not rendered", tree)
-if (!findText(tree, "running")) fail("running status not rendered", tree)
-if (!findClass(tree, "wb-run-list")) fail("run history list missing", tree)
-
-// Selecting an older run from the history shows its captured reply.
-const historyRow = findNode(tree, node => node.props?.className?.includes?.("wb-run-row") && node.props?.["data-active"] === "false")
-if (!historyRow) fail("no selectable older run in history", tree)
-historyRow.props.onClick()
+// --- history tab: digest report, raw text folded ----------------------------
+clickTab(tree, 'history')
 tree = renderPanel()
-if (!findText(tree, "上一次运行的回复正文")) fail("selecting a run from history did not show its reply", tree)
-
-if (!findClass(tree, "wb-continuity")) fail("continuity section missing after load", tree)
-if (!findText(tree, "测试主线")) fail("fetched mainline not rendered", tree)
-
-// Secondary detail is collapsed: audit appears only after opening it.
-if (findClass(tree, "wb-audit")) fail("audit rendered before the details section was opened", tree)
-const moreToggle = findNode(tree, node => node.props?.className?.includes?.("wb-more-toggle"))
-if (!moreToggle) fail("no details toggle for tasks/decisions/audit", tree)
-moreToggle.props.onClick()
+if (findClass(tree, 'wb-compose')) fail('task form leaked into the history tab', tree)
+if (!findClass(tree, 'wb-runs')) fail('run list missing on the history tab', tree)
+// The newest run is selected by default; select the finished one.
+const olderRow = findNode(tree, n => n.props?.className?.includes?.('wb-run-row') && n.props?.['data-active'] === 'false')
+if (!olderRow) fail('no selectable older run in the history list', tree)
+olderRow.props.onClick()
+// The report fetch is async: render once to start it, settle, render again.
 tree = renderPanel()
-if (!findClass(tree, "wb-audit")) fail("audit section missing after opening details", tree)
-if (!findText(tree, "state.edit")) fail("audit entry not rendered", tree)
-
-// Open the continuity editor and confirm the editable controls exist.
-const editButton = findNode(tree, node => node.type === "button" && findText(node.props?.children, "edit"))
-if (!editButton) fail("no edit button in the continuity section", tree)
-editButton.props.onClick()
+await new Promise(resolve => setTimeout(resolve, 20))
 tree = renderPanel()
-if (!findNode(tree, node => node.type === "input" && node.props?.id === "wb-edit-mainline")) fail("continuity editor did not open", tree)
-if (!findText(tree, "save")) fail("no save button in the editor", tree)
+if (!findClass(tree, 'wb-report')) fail('report card missing after selecting a run', tree)
+if (!findText(tree, '历史结论摘要')) fail('report conclusion not rendered', tree)
+if (!findText(tree, '要点一')) fail('report points not rendered', tree)
+if (!findText(tree, 'D:/out/report.md')) fail('report artifacts not rendered', tree)
+if (!findText(tree, '是否继续？')) fail('report pending question not rendered', tree)
+// The raw record is a disclosure, never the first thing painted.
+const rawDetails = findNode(tree, n => n.type === 'details' && findText(n.props?.children, 'rawReply'))
+if (!rawDetails) fail('raw record is not behind a disclosure', tree)
+if (!includesText(rawDetails, '上一次运行的回复正文')) fail('raw reply not available inside the disclosure', tree)
+if (findText(tree, '上一次运行的回复正文') && !includesText(rawDetails, '上一次运行的回复正文')) {
+  fail('raw reply painted outside its disclosure', tree)
+}
+
+// --- workspace tab: continuity, decisions, timeline, metrics ----------------
+clickTab(tree, 'workspace')
+tree = renderPanel()
+if (findClass(tree, 'wb-report')) fail('report card leaked into the workspace tab', tree)
+if (!findClass(tree, 'wb-continuity')) fail('continuity section missing', tree)
+if (!findText(tree, '测试主线')) fail('fetched mainline not rendered', tree)
+if (!findClass(tree, 'wb-decision-card')) fail('decisions were not turned into cards', tree)
+if (!findText(tree, '面板改成标签页')) fail('decision card title not rendered', tree)
+if (!findText(tree, '背景')) fail('decision card did not split its labelled parts', tree)
+if (!findClass(tree, 'wb-audit')) fail('audit timeline missing', tree)
+if (!findText(tree, 'state.edit')) fail('audit entry not rendered as a readable action', tree)
+if (!findClass(tree, 'wb-day')) fail('audit timeline is not grouped by day', tree)
+if (!findClass(tree, 'wb-metrics')) fail('metrics missing', tree)
+if (!includesText(tree, 'dispatches')) fail('metrics do not report the dispatch count', tree)
+
+// Continuity editor opens inside the workspace tab.
+clickButton(tree, 'edit')
+tree = renderPanel()
+if (!findNode(tree, n => n.type === 'input' && n.props?.id === 'wb-edit-mainline')) fail('continuity editor did not open', tree)
 
 // Sidebar icon must render an svg element.
 const iconTree = render(sidebar.renderFn({ size: 24, active: false }))
-if (iconTree?.type !== "svg") fail("sidebar icon not an svg", tree)
+if (iconTree?.type !== 'svg') fail('sidebar icon not an svg', tree)
 
-console.log("panel mounted: true | run card from runs.json: true | history selection: true | details collapsed: true")
-console.log("continuity editor: true | audit: true | sidebar icon:", iconTree.type)
+console.log('tabs: run/task/history/workspace, one body at a time')
+console.log('task tab: prefill ok, module insert ok, session target ok')
+console.log('history tab: conclusion/points/artifacts/pending ok, raw folded')
+console.log('workspace tab: continuity/decision cards/day-grouped audit/metrics ok')
+console.log('sidebar icon:', iconTree.type)
 console.log('')
 console.log('CLIENT HARNESS PASS')

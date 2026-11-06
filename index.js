@@ -1,7 +1,10 @@
-// dsh-workbench v0.4.1 —— 工作区指挥台：可编辑接续状态 + 审计 + 派发到真实 DSH 会话
+// dsh-workbench v0.6.0 —— 工作区指挥台：四标签页 + 可复用模块派发 + 结论型运行报告
 //
-// v0.2 的 UI 读取真实工作台文件并生成本地任务草稿；不写母站，不启动模型，不改变会话。
-// 三个 Host 工具仍保留：wb_get / wb_set / wb_close。
+// v0.6 的三条改动都针对同一个毛病：面板把 agent 的内部语言当成给人看的东西。
+//   1. 记录先消化：/api/report 输出结论/产物/待确认/统计，原文只作为可展开证据。
+//   2. 输入可装配：/api/modules 持久化可复用模块；派发可指定已有会话（不总是新建）。
+//   3. 一屏一件事：前端拆成 运行 / 任务 / 历史 / 工作区 四个标签页。
+// 三个 Host 工具（wb_get / wb_set / wb_close）保持不变。
 
 import {
   readFileSync,
@@ -81,7 +84,12 @@ const DISPATCH_API_PATH = '/dsh-workbench/api/dispatch'
 const RUNS_API_PATH = '/dsh-workbench/api/runs'
 const RUNS_CANCEL_API_PATH = '/dsh-workbench/api/runs/cancel'
 const RUNS = join(WB_DIR, 'runs.json')
+const MODULES = join(WB_DIR, 'modules.json')
 const MAX_RUNS = 50
+const MAX_MODULES = 200
+const SESSIONS_API_PATH = '/dsh-workbench/api/sessions'
+const MODULES_API_PATH = '/dsh-workbench/api/modules'
+const REPORT_API_PATH = '/dsh-workbench/api/report'
 const MAX_SOURCE_BYTES = 256 * 1024
 const MAX_SOURCE_CHARS = 12000
 const MAX_SOURCES_PER_ROLE = 32
@@ -570,6 +578,18 @@ async function refreshRuns(ctx, items) {
       changed = true
     }
   }
+  // A run still marked running whose session this Host no longer lists cannot
+  // be progressing — after a restart it is a lie, not a status. Mark it so the
+  // panel can offer archiving instead of showing "running" forever. A short
+  // grace period keeps a just-dispatched run from flapping.
+  const now = Date.now()
+  for (const run of items) {
+    if (!run || typeof run !== 'object' || typeof run.sessionId !== 'string') continue
+    const tracked = byId.has(run.sessionId)
+    const settled = now - (Number(run.updatedAt) || Number(run.createdAt) || now) > 30000
+    const orphaned = run.status === 'running' && !tracked && settled
+    if (Boolean(run.orphaned) !== orphaned) { run.orphaned = orphaned; changed = true }
+  }
   if (changed) writeRuns(items)
   return items
 }
@@ -762,6 +782,179 @@ function statePayload(ctx) {
   }
 }
 
+// ---- v0.6: reusable modules, session targeting, derived reports -------------
+//
+// The panel must not hand raw event streams to a human. These helpers turn the
+// stored records into the three things a person actually needs: what was
+// decided/concluded, which artifacts came out, and what still needs an answer.
+
+const MODULE_KINDS = new Set(['goal', 'plan', 'instruction'])
+
+function readModules() {
+  const raw = readJsonSafe(MODULES, null)
+  if (!raw || !Array.isArray(raw.items)) return []
+  return raw.items.filter(item => item && typeof item === 'object' && typeof item.id === 'string')
+}
+
+function writeModules(items) {
+  ensureDir()
+  writeFileSync(MODULES, JSON.stringify({ version: 1, items: items.slice(0, MAX_MODULES) }, null, 2), 'utf-8')
+}
+
+function newModuleId() {
+  return 'mod_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
+}
+
+function sessionTitle(ctx, sessionId) {
+  const events = sessionEventsOf(ctx, sessionId)
+  for (let i = events.length - 1; i >= 0; i--) {
+    const event = events[i]
+    if (event?.type !== 'session/title') continue
+    const title = firstValue(event?.data?.title, event?.data?.text, event?.data?.name)
+    if (typeof title === 'string' && title.trim()) return title.trim().slice(0, 120)
+  }
+  return ''
+}
+
+async function sessionsPayload(ctx) {
+  const controller = serviceGet(ctx, 'sessionController')
+  const capable = Boolean(controller && typeof controller.list === 'function')
+  if (!capable) return { ok: true, available: false, items: [], fetchedAt: new Date().toISOString() }
+  let listed = []
+  try { listed = await controller.list() } catch { listed = [] }
+  const items = (Array.isArray(listed) ? listed : [])
+    .filter(item => item && typeof item.sessionId === 'string')
+    .map(item => ({
+      sessionId: item.sessionId,
+      title: sessionTitle(ctx, item.sessionId) || '',
+      running: item.running === true,
+      blank: item.blank === true,
+      updatedAt: Number(item.updatedAt) || 0,
+    }))
+    .slice(0, 60)
+  return { ok: true, available: true, items, fetchedAt: new Date().toISOString() }
+}
+
+// The digest is deliberately dumb and predictable: the panel shows it as a
+// summary and always keeps the raw reply one click away. It never claims more
+// than the text supports.
+function firstParagraph(text) {
+  const clean = String(text || '').replace(/\r\n/g, '\n').trim()
+  if (!clean) return ''
+  const first = clean.split(/\n\s*\n/)[0].trim()
+  return first.slice(0, 600)
+}
+
+function bulletPoints(text, max = 5) {
+  const out = []
+  for (const line of String(text || '').replace(/\r\n/g, '\n').split('\n')) {
+    const match = /^\s*(?:[-*+·]|\d+[.)])\s+(?:\[[ xX]\]\s*)?(.+)$/.exec(line)
+    if (!match) continue
+    const value = match[1].replace(/\*\*/g, '').replace(/`/g, '').trim()
+    if (value && !out.includes(value)) out.push(value.slice(0, 180))
+    if (out.length >= max) break
+  }
+  return out
+}
+
+const PATH_TOKEN = /(?:[A-Za-z]:[\\/][^\s"'`，。；：、）)】\]}>|]+|(?:\.{0,2}\/)?[\w@.\-]+(?:[\\/][\w@.\-]+)*\.[A-Za-z0-9]{1,8})/g
+
+function collectPathTokens(value, sink, depth = 0) {
+  if (value == null || depth > 4 || sink.length >= 40) return
+  if (typeof value === 'string') {
+    for (const match of value.match(PATH_TOKEN) || []) {
+      const token = match.trim()
+      if (token.length < 3 || token.length > 240) continue
+      sink.push(token)
+      if (sink.length >= 40) return
+    }
+    return
+  }
+  if (Array.isArray(value)) {
+    for (const item of value.slice(0, 16)) collectPathTokens(item, sink, depth + 1)
+    return
+  }
+  if (typeof value === 'object') {
+    for (const item of Object.values(value).slice(0, 24)) collectPathTokens(item, sink, depth + 1)
+  }
+}
+
+function artifactList(events, limit = 12) {
+  const seen = new Set()
+  const out = []
+  for (const event of events) {
+    if (event?.type !== 'tool/call') continue
+    const tool = String(event?.data?.name || 'tool').slice(0, 40)
+    const tokens = []
+    collectPathTokens(event?.data?.arguments ?? event?.data?.input ?? event?.data, tokens)
+    for (const token of tokens) {
+      const key = token.replace(/\\/g, '/').toLowerCase()
+      if (seen.has(key)) continue
+      seen.add(key)
+      out.push({ path: token, tool })
+      if (out.length >= limit) return out
+    }
+  }
+  return out
+}
+
+function pendingItems(text, max = 5) {
+  const out = []
+  const cleaned = String(text || '').replace(/\r\n/g, '\n')
+  for (const sentence of cleaned.split(/(?<=[。！？!?])\s*|\n+/)) {
+    const value = sentence.replace(/\*\*/g, '').replace(/`/g, '').trim()
+    if (!value || value.length < 4) continue
+    if (!/[？?]|需要确认|请确认|待确认|待你决定|需要你决定|请你决定|要不要|选择哪/.test(value)) continue
+    if (!out.includes(value)) out.push(value.slice(0, 200))
+    if (out.length >= max) break
+  }
+  return out
+}
+
+function reportPayload(ctx, run) {
+  const events = sessionEventsOf(ctx, run.sessionId)
+  const storedReply = typeof run.reply === 'string' ? run.reply : ''
+  const reply = storedReply || (run.status === 'running' ? '' : lastAssistantText(ctx, run.sessionId))
+  const progress = runProgress(events) || {}
+  const started = Number(run.createdAt) || 0
+  const ended = Number(run.updatedAt) || started
+  const pending = pendingItems(reply)
+  if (run.waiting === true) pending.unshift('会话停在提问上：打开该会话回答后，运行才会继续。')
+  const conclusion = firstParagraph(reply)
+    || (run.status === 'running' ? '这一轮还没有产出结论（运行中）。' : '这一轮没有产出结论。')
+  return {
+    ok: true,
+    derived: true,
+    note: '机器摘要：与原文不一致时以原文为准。',
+    run: {
+      runId: run.runId,
+      goal: run.goal || '',
+      status: run.status || 'unknown',
+      model: run.model || '',
+      sessionId: run.sessionId,
+      sessionMode: run.sessionMode || 'new',
+      cwd: run.cwd || '',
+      plan: run.plan || '',
+      instruction: run.instruction || '',
+      waiting: run.waiting === true,
+    },
+    conclusion,
+    points: bulletPoints(reply),
+    artifacts: artifactList(events),
+    pending: pending.slice(0, 5),
+    stats: {
+      durationMs: Math.max(0, ended - started),
+      // Live session events are the most accurate source while the session is
+      // loaded; the stored counters are the cold-session fallback.
+      steps: Number(progress ? progress.steps : run.steps) || 0,
+      toolCalls: Number(progress ? progress.toolCalls : run.toolCalls) || 0,
+      messages: Number(progress ? progress.messages : run.messages) || 0,
+    },
+    reply,
+    fetchedAt: new Date().toISOString(),
+  }
+}
+
 export const name = 'dsh-workbench'
 export const inject = ['tools', 'webServer', 'connection']
 
@@ -941,6 +1134,90 @@ export async function apply(ctx) {
     },
   }))
 
+  // Session targeting: the panel can dispatch into an existing session instead
+  // of always creating one. Read-only: it never creates, prompts or cancels.
+  disposers.push(ctx.webServer.register({
+    kind: 'exact',
+    path: SESSIONS_API_PATH,
+    handler: async (req, res) => {
+      if (!guard(req, res, 'GET')) return
+      sendJson(res, 200, await sessionsPayload(ctx))
+    },
+  }))
+
+  // Reusable modules: the typed building blocks a dispatch is assembled from,
+  // so an instruction written once can be assembled again instead of retyped.
+  disposers.push(ctx.webServer.register({
+    kind: 'exact',
+    path: MODULES_API_PATH,
+    handler: async (req, res) => {
+      if (req.method === 'GET') {
+        if (!guard(req, res, 'GET')) return
+        sendJson(res, 200, { ok: true, items: readModules(), fetchedAt: new Date().toISOString() })
+        return
+      }
+      if (!guard(req, res, 'POST')) return
+      const body = await readJsonBody(req)
+      if (body.tooLarge) { sendJson(res, 413, { ok: false, error: '请求体过大' }); return }
+      if (body.error) { sendJson(res, 400, { ok: false, error: '请求体不是合法 JSON 对象' }); return }
+      const input = body.json
+      const items = readModules()
+      const removeId = normaliseText(input.id, 80)
+      if (removeId === INVALID) { sendJson(res, 400, { ok: false, error: '字段类型或长度不合法' }); return }
+      if (removeId && input.remove === true) {
+        const next = items.filter(item => item.id !== removeId)
+        if (next.length === items.length) { sendJson(res, 404, { ok: false, error: '模块不存在' }); return }
+        writeModules(next)
+        appendAudit({ action: 'module.remove', requestId: removeId, summary: removeId })
+        sendJson(res, 200, { ok: true, items: next })
+        return
+      }
+      const title = normaliseText(input.title, 120)
+      const kind = normaliseText(input.kind, 20)
+      const text = normaliseText(input.text, 8000)
+      if (title === INVALID || kind === INVALID || text === INVALID) {
+        sendJson(res, 400, { ok: false, error: '字段类型或长度不合法' })
+        return
+      }
+      if (!title || !text) { sendJson(res, 400, { ok: false, error: 'title 与 text 不能为空' }); return }
+      if (!MODULE_KINDS.has(String(kind || ''))) {
+        sendJson(res, 400, { ok: false, error: 'kind 必须是 goal / plan / instruction' })
+        return
+      }
+      const now = Date.now()
+      const existing = items.find(item => item.kind === kind && item.title === title)
+      let saved
+      if (existing) {
+        existing.text = text
+        existing.updatedAt = now
+        saved = existing
+      } else {
+        saved = { id: newModuleId(), kind, title, text, uses: 0, createdAt: now, updatedAt: now }
+        items.unshift(saved)
+      }
+      writeModules(items)
+      appendAudit({ action: 'module.save', requestId: saved.id, summary: `${kind} · ${title}` })
+      sendJson(res, 200, { ok: true, module: saved, items })
+    },
+  }))
+
+  // Report digest: one run, distilled into conclusion / artifacts / open
+  // questions / stats. The raw reply rides along so the panel can hide it
+  // behind a disclosure instead of painting it as the report.
+  disposers.push(ctx.webServer.register({
+    kind: 'exact',
+    path: REPORT_API_PATH,
+    handler: async (req, res) => {
+      if (!guard(req, res, 'GET')) return
+      const url = new URL(req.url || '/', 'http://127.0.0.1')
+      const runId = url.searchParams.get('runId') || ''
+      const runs = readRuns()
+      const run = runId ? runs.find(item => item.runId === runId) : runs[0]
+      if (!run) { sendJson(res, 404, { ok: false, error: '没有这次运行的记录' }); return }
+      sendJson(res, 200, reportPayload(ctx, run))
+    },
+  }))
+
   // Dispatch composes a prompt for a real DSH Session through the official
   // Host sessionController. It never calls a provider directly and only runs
   // when the workspace config opts in (`execution.enabled`).
@@ -957,14 +1234,19 @@ export async function apply(ctx) {
       const plan = normaliseText(input.plan, 4000)
       const instruction = normaliseText(input.instruction, 4000)
       const model = normaliseText(input.model, 200)
-      if (goal === INVALID || plan === INVALID || instruction === INVALID || model === INVALID) {
+      // Optional session target: an existing session id reuses that conversation
+      // (its history and approvals stay put) instead of creating a new one.
+      const targetSessionId = normaliseText(input.sessionId, 200)
+      const moduleIds = Array.isArray(input.moduleIds) ? input.moduleIds.filter(id => typeof id === 'string').slice(0, 20) : []
+      if (goal === INVALID || plan === INVALID || instruction === INVALID || model === INVALID || targetSessionId === INVALID) {
         sendJson(res, 400, { ok: false, error: '字段类型或长度不合法' })
         return
       }
       if (!goal) { sendJson(res, 400, { ok: false, error: 'goal 不能为空' }); return }
       const exec = executionConfig()
       const controller = serviceGet(ctx, 'sessionController')
-      const capable = Boolean(controller && typeof controller.create === 'function' && typeof controller.prompt === 'function')
+      const sessionMode = targetSessionId ? 'existing' : 'new'
+      const capable = Boolean(controller && typeof controller.prompt === 'function' && (targetSessionId || typeof controller.create === 'function'))
       const promptText = composeDispatchPrompt({ goal, plan: plan || '', instruction: instruction || '' })
       if (input.dryRun === true) {
         sendJson(res, 200, {
@@ -975,6 +1257,8 @@ export async function apply(ctx) {
           prompt: promptText,
           cwd: exec.cwd,
           model: model || '',
+          sessionMode,
+          sessionId: targetSessionId || '',
           memoryFingerprint: memoryPreviewPayload().memory.fingerprint,
         })
         return
@@ -988,15 +1272,17 @@ export async function apply(ctx) {
         return
       }
       const runId = newRunId()
-      let sessionId = ''
-      try {
-        const created = await controller.create({ cwd: exec.cwd })
-        sessionId = String(created?.sessionId ?? created?.value?.sessionId ?? '')
-        if (!sessionId) throw new Error('sessionController.create 未返回 sessionId')
-      } catch (error) {
-        appendAudit({ action: 'dispatch.failed', requestId: runId, summary: 'create: ' + String(error?.message || error).slice(0, 160) })
-        sendJson(res, 502, { ok: false, code: 'create-failed', error: String(error?.message || error) })
-        return
+      let sessionId = targetSessionId || ''
+      if (!sessionId) {
+        try {
+          const created = await controller.create({ cwd: exec.cwd })
+          sessionId = String(created?.sessionId ?? created?.value?.sessionId ?? '')
+          if (!sessionId) throw new Error('sessionController.create 未返回 sessionId')
+        } catch (error) {
+          appendAudit({ action: 'dispatch.failed', requestId: runId, summary: 'create: ' + String(error?.message || error).slice(0, 160) })
+          sendJson(res, 502, { ok: false, code: 'create-failed', error: String(error?.message || error) })
+          return
+        }
       }
       let modelWarning = ''
       if (model && typeof controller.selectModel === 'function') {
@@ -1036,7 +1322,10 @@ export async function apply(ctx) {
       const run = {
         runId,
         sessionId,
+        sessionMode,
         goal: goal.slice(0, 200),
+        plan: (plan || '').slice(0, 2000),
+        instruction: (instruction || '').slice(0, 2000),
         model: model || '',
         status: 'running',
         createdAt: now,
@@ -1047,7 +1336,18 @@ export async function apply(ctx) {
       const runs = readRuns()
       runs.unshift(run)
       writeRuns(runs)
-      appendAudit({ action: 'dispatch.start', requestId: runId, summary: `session ${sessionId} · ${model || '默认模型'} · ${goal.slice(0, 80)}` })
+      if (moduleIds.length) {
+        const modules = readModules()
+        let touched = false
+        for (const module of modules) {
+          if (!moduleIds.includes(module.id)) continue
+          module.uses = (Number(module.uses) || 0) + 1
+          module.lastUsedAt = now
+          touched = true
+        }
+        if (touched) writeModules(modules)
+      }
+      appendAudit({ action: 'dispatch.start', requestId: runId, summary: `session ${sessionId} (${sessionMode}) · ${model || '默认模型'} · ${goal.slice(0, 80)}` })
       sendJson(res, 200, { ok: true, dryRun: false, run, ...(modelWarning ? { warning: modelWarning } : {}) })
     },
   }))
@@ -1075,6 +1375,19 @@ export async function apply(ctx) {
       const runs = readRuns()
       const run = runs.find(item => item && item.runId === runId)
       if (!run) { sendJson(res, 404, { ok: false, error: '运行记录不存在' }); return }
+      // Archiving is the honest repair for a run whose session is gone (e.g.
+      // after a Harness restart): local bookkeeping only, no fake cancellation.
+      if (body.json.archive === true) {
+        run.status = 'cancelled'
+        run.waiting = false
+        run.orphaned = false
+        run.updatedAt = Date.now()
+        run.archivedAt = run.updatedAt
+        writeRuns(runs)
+        appendAudit({ action: 'dispatch.archive', requestId: runId, summary: `session ${run.sessionId} · 会话不在当前 Harness 中，本地归档` })
+        sendJson(res, 200, { ok: true, run })
+        return
+      }
       const controller = serviceGet(ctx, 'sessionController')
       if (!controller || typeof controller.cancel !== 'function') {
         sendJson(res, 501, { ok: false, code: 'unsupported', error: '当前 profile 未提供 sessionController.cancel' })

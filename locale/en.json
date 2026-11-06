@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Workbench",
-    "description": "Shows your current workstream, checkpoint, next actions, guardrails, and ledger snapshot."
+    "description": "Four tabs: the run in flight, the next task assembled from reusable modules, past runs digested into conclusions and artifacts, and the workspace context behind them."
   }
 }
