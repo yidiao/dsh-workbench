@@ -241,9 +241,17 @@ const blockStart = agentsText.indexOf('<!-- dsh-workbench:generated:start -->')
 const blockEnd = agentsText.indexOf('<!-- dsh-workbench:generated:end -->', blockStart)
 const generatedBlock = agentsText.slice(blockStart, blockEnd)
 const generatedBytes = Buffer.byteLength(generatedBlock, 'utf8')
-if (generatedBytes > 2048) {
+if (generatedBytes > 2600) {
   console.error('FAIL: generated block over budget', generatedBytes)
   process.exit(1)
+}
+// Guardrails must survive the size budget: dropping a red line to make room for
+// one more judgement would be the最 expensive kind of truncation.
+for (const line of stored.red_lines) {
+  if (!generatedBlock.includes(line)) {
+    console.error('FAIL: red line dropped from the generated block', line, generatedBlock)
+    process.exit(1)
+  }
 }
 // state-v2 must be derived from the same record (state.json is no longer read).
 if (payload.memory?.active !== memory.active || payload.state?.mainline !== stored.mainline) {

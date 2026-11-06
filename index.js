@@ -130,7 +130,7 @@ const PROJECTS_JSON = join(MEMORY_DIR, 'projects.json')
 const MEMORY_VERSION = 1
 // The harness injects this whole file once per session; keep the generated part
 // small enough that it is a prefix, not a transcript.
-const MAX_AGENTS_BLOCK_BYTES = 2048
+const MAX_AGENTS_BLOCK_BYTES = 2600
 const AGENTS_START = '<!-- dsh-workbench:generated:start -->'
 const AGENTS_END = '<!-- dsh-workbench:generated:end -->'
 const AGENTS_MANUAL_HEADER = [
@@ -521,17 +521,21 @@ function renderMemoryBlock(memory, options = {}) {
   return lines.join('\n')
 }
 
-const BLOCK_SHAPES = [
-  { decisions: 6, next: 3, red: 4 },
-  { decisions: 4, next: 3, red: 3 },
-  { decisions: 2, next: 2, red: 2 },
-  { decisions: 0, next: 2, red: 2 },
-  { decisions: 0, next: 1, red: 1 },
-  { decisions: 0, next: 1, red: 0 },
-]
+function blockShapes(memory) {
+  const redTotal = Math.max(1, memory.red_lines.length)
+  const decisionsTotal = Math.max(1, memory.decisions.length)
+  const redSteps = [...new Set([redTotal, Math.min(redTotal, 4), Math.min(redTotal, 3), 2, 1])]
+  const decisionSteps = [...new Set([6, 4, 2, 1].filter(count => count <= decisionsTotal).concat([0]))]
+  const shapes = []
+  // Full guardrails first: a shorter judgement list is the cheaper loss.
+  for (const red of redSteps) {
+    for (const decisions of decisionSteps) shapes.push({ decisions, next: 3, red })
+  }
+  return shapes
+}
 
 function fitMemoryBlock(memory) {
-  for (const shape of BLOCK_SHAPES) {
+  for (const shape of blockShapes(memory)) {
     const block = renderMemoryBlock(memory, shape)
     if (Buffer.byteLength(block, 'utf8') <= MAX_AGENTS_BLOCK_BYTES) return block
   }
