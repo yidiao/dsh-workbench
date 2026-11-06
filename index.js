@@ -67,16 +67,14 @@ const RELAY_DIR = process.env.DSH_RELAY_DIR || DEFAULT_RELAY_DIR
 const RELAY_LEDGER = join(RELAY_DIR, 'ledger.csv')
 const RELAY_CARDS = join(RELAY_DIR, 'cards')
 const STATE_JSON = join(WB_DIR, 'state.json')
-const STATE_MD = join(WB_DIR, 'state.md')
 const DECISIONS = join(WB_DIR, 'decisions.md')
 const LEDGER = join(WB_DIR, 'ledger.json')
 const AUDIT = join(WB_DIR, 'audit.jsonl')
 const MAX_AUDIT_CHARS = 256 * 1024
 const MAX_AUDIT_ENTRIES = 400
 const API_PATH = '/dsh-workbench/api/state-v2'
-// Preview is intentionally a read-only endpoint. There is no POST/model route.
-const PREVIEW_API_PATH = '/dsh-workbench/api/preview'
-const PREVIEW_API_VERSION_PATH = '/dsh-workbench/api/preview-v1'
+
+const MEMORY_API_PATH = '/dsh-workbench/api/memory'
 const MODELS_API_PATH = '/dsh-workbench/api/models'
 const STATE_EDIT_API_PATH = '/dsh-workbench/api/state-edit'
 const DECISION_API_PATH = '/dsh-workbench/api/decision-add'
@@ -95,9 +93,29 @@ const MODULES_API_PATH = '/dsh-workbench/api/modules'
 const TEMPLATES_API_PATH = '/dsh-workbench/api/templates'
 const REPORT_API_PATH = '/dsh-workbench/api/report'
 const MAX_SOURCE_BYTES = 256 * 1024
-const MAX_SOURCE_CHARS = 12000
-const MAX_SOURCES_PER_ROLE = 32
-const DEFAULT_MEMORY_BUDGET_TOKENS = 12000
+const BOUNDED_TEXT_CHARS = 12000
+
+// ---- v1.0 memory: one JSON truth per project, one generated AGENTS.md block --
+//
+// The old primary/secondary "memory preview" never reached a model or a screen.
+// v1.0 keeps one authoritative record per project and renders exactly one
+// bounded block into the project's AGENTS.md, which the harness injects on the
+// first request of a session (no custom pre-step code, no cache-prefix churn).
+const MEMORY_DIR = join(WB_DIR, 'memory')
+const PROJECTS_JSON = join(MEMORY_DIR, 'projects.json')
+const MEMORY_VERSION = 1
+// The harness injects this whole file once per session; keep the generated part
+// small enough that it is a prefix, not a transcript.
+const MAX_AGENTS_BLOCK_BYTES = 2048
+const AGENTS_START = '<!-- dsh-workbench:generated:start -->'
+const AGENTS_END = '<!-- dsh-workbench:generated:end -->'
+const AGENTS_MANUAL_HEADER = [
+  '# AGENTS.md',
+  '',
+  '> 手工区：这一块由你维护，工作台只改写下面 `dsh-workbench:generated` 之间的内容。',
+  '> 生成的记忆来自 `<工作台>/memory/*.json`，真源在文件里，不在会话里。',
+  '',
+].join('\n')
 
 const textOutput = {
   schema: {
@@ -137,16 +155,6 @@ function asPositiveInt(value, fallback, max = Number.MAX_SAFE_INTEGER) {
   const parsed = Number(value)
   if (!Number.isFinite(parsed) || parsed < 1) return fallback
   return Math.min(Math.floor(parsed), max)
-}
-
-function normalizeSourceList(value) {
-  if (!value) return []
-  if (typeof value === 'string') return value.split(/[\r\n,;]+/).map(item => item.trim()).filter(Boolean)
-  if (Array.isArray(value)) return value.flatMap(normalizeSourceList)
-  if (typeof value === 'object') {
-    return Object.values(value).flatMap(normalizeSourceList)
-  }
-  return []
 }
 
 function readWorkspaceConfig() {
@@ -198,126 +206,452 @@ function canonicalPath(path) {
   try { return realpathSync(path) } catch { return resolve(path) }
 }
 
-function relativeWithinRoot(path, root) {
-  const value = relative(canonicalPath(root), canonicalPath(path))
-  const parentPrefix = '..' + sep
-  return value === '' || (value !== '..' && !value.toLowerCase().startsWith(parentPrefix.toLowerCase()) && !isAbsolute(value))
+// ---- v1.0 memory core ------------------------------------------------------
+//
+// One JSON truth per project root, one generated block inside that root's
+// AGENTS.md. The old primary/secondary "memory preview" is gone: it was a third
+// half-system that only listed file sizes and never reached a model.
+//
+// Why AGENTS.md: the harness already injects the file chain on the first request
+// of a session. Rendering into it means zero custom prompt code, no
+// cache-prefix damage, and one place the user can read with their own eyes.
+
+function memoryKeyFor(root) {
+  return createHash('sha256').update(String(root).toLowerCase()).digest('hex').slice(0, 12)
 }
 
-function insideRoot(candidate, root) {
-  // Lexical check also rejects nonexistent traversal paths; canonical check
-  // additionally catches existing symlinks that target outside the workspace.
-  const lexical = relative(resolve(root), resolve(candidate))
-  if (lexical !== '' && (lexical === '..' || lexical.startsWith('..' + sep) || isAbsolute(lexical))) return false
-  return relativeWithinRoot(candidate, root)
+function projectNameFor(root) {
+  return basename(canonicalPath(String(root))) || 'project'
 }
 
-function sourcePath(value, root) {
-  const candidate = String(value || '').trim()
-  if (!candidate || candidate.startsWith('~') || candidate.includes('\0')) return ''
-  const path = isAbsolute(candidate) ? resolve(candidate) : resolve(root, candidate)
-  if (!insideRoot(path, root)) return ''
-  // Resolve an existing symlink before reading so a source cannot escape the
-  // workspace root through a link. Missing sources retain their lexical path.
-  return existsSync(path) ? canonicalPath(path) : path
+function memoryPath(key) {
+  return join(MEMORY_DIR, key + '.json')
 }
 
-function relativeSourcePath(path) {
-  if (!path || !relativeWithinRoot(path, WB_DIR)) return ''
-  return relative(canonicalPath(WB_DIR), canonicalPath(path)).split(sep).join('/')
+function memoryDecisionsPath(key) {
+  return join(MEMORY_DIR, key + '.decisions.md')
 }
 
-function displayConfiguredSource(value, path) {
-  const text = String(value || '')
-  if (!isAbsolute(text)) return text
-  return relativeSourcePath(path) || '[outside-workspace]'
+function readProjects() {
+  const raw = readJsonSafe(PROJECTS_JSON, null)
+  const source = raw && typeof raw === 'object' ? raw : {}
+  const items = Array.isArray(source.items)
+    ? source.items.filter(item => item && typeof item.key === 'string' && typeof item.root === 'string')
+    : []
+  return { version: MEMORY_VERSION, active: typeof source.active === 'string' ? source.active : '', items }
 }
 
-function parseMemorySources(config) {
-  const memory = config?.memory && typeof config.memory === 'object' ? config.memory : {}
-  const sourceConfig = firstValue(config?.memorySources, config?.memory_sources, memory.sources, memory.files)
-  const primaryValue = firstValue(memory.primary, memory.main, memory.primarySource, config?.primaryMemory, config?.primary_memory)
-  const secondaryValue = firstValue(memory.secondary, memory.auxiliary, memory.secondarySources, config?.secondaryMemory, config?.secondary_memory)
-  const primary = normalizeSourceList(primaryValue || sourceConfig?.primary || sourceConfig?.main)
-  const secondary = normalizeSourceList(secondaryValue || sourceConfig?.secondary || sourceConfig?.auxiliary)
-  const fallback = normalizeSourceList(sourceConfig)
+function writeProjects(value) {
+  ensureDir()
+  mkdirSync(MEMORY_DIR, { recursive: true })
+  writeFileSync(PROJECTS_JSON, JSON.stringify({
+    version: MEMORY_VERSION,
+    active: value.active || '',
+    items: value.items.slice(0, 50),
+  }, null, 2), 'utf-8')
+}
+
+function emptyMemory(key, root) {
+  const stamp = new Date().toISOString()
   return {
-    primary: [...new Set(primary.length ? primary : fallback.slice(0, 1))].slice(0, MAX_SOURCES_PER_ROLE),
-    secondary: [...new Set(secondary.length ? secondary : fallback.slice(primary.length ? 1 : 0))].slice(0, MAX_SOURCES_PER_ROLE),
+    version: MEMORY_VERSION,
+    key,
+    name: projectNameFor(root),
+    root,
+    mainline: '',
+    stopped_at: '',
+    next: [],
+    red_lines: [],
+    decisions: [],
+    outcome: '',
+    openedAt: '',
+    closedAt: '',
+    basis: { runId: '', sessionId: '' },
+    createdAt: stamp,
+    updatedAt: stamp,
+    migratedFrom: '',
   }
 }
 
-function sourceEntries() {
+function normaliseMemory(raw, key) {
+  const strings = value => (Array.isArray(value) ? value.map(item => String(item)).filter(Boolean) : [])
+  const decisions = Array.isArray(raw.decisions)
+    ? raw.decisions
+      .filter(item => item && typeof item === 'object' && typeof item.id === 'string')
+      .map(item => ({ id: item.id, at: String(item.at || ''), title: String(item.title || '') }))
+      .slice(-40)
+    : []
+  return {
+    version: MEMORY_VERSION,
+    key: typeof raw.key === 'string' ? raw.key : key,
+    name: typeof raw.name === 'string' ? raw.name : '',
+    root: typeof raw.root === 'string' ? raw.root : '',
+    mainline: typeof raw.mainline === 'string' ? raw.mainline : '',
+    stopped_at: typeof raw.stopped_at === 'string' ? raw.stopped_at : '',
+    next: strings(raw.next),
+    red_lines: strings(raw.red_lines),
+    decisions,
+    outcome: typeof raw.outcome === 'string' ? raw.outcome : '',
+    openedAt: typeof raw.openedAt === 'string' ? raw.openedAt : '',
+    closedAt: typeof raw.closedAt === 'string' ? raw.closedAt : '',
+    basis: raw.basis && typeof raw.basis === 'object'
+      ? { runId: String(raw.basis.runId || ''), sessionId: String(raw.basis.sessionId || '') }
+      : { runId: '', sessionId: '' },
+    createdAt: typeof raw.createdAt === 'string' ? raw.createdAt : '',
+    updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : '',
+    migratedFrom: typeof raw.migratedFrom === 'string' ? raw.migratedFrom : '',
+  }
+}
+
+function readMemory(key) {
+  const raw = readJsonSafe(memoryPath(key), null)
+  if (!raw || typeof raw !== 'object') return null
+  return normaliseMemory(raw, key)
+}
+
+function writeMemoryJson(memory) {
+  ensureDir()
+  mkdirSync(MEMORY_DIR, { recursive: true })
+  writeFileSync(memoryPath(memory.key), JSON.stringify(memory, null, 2), 'utf-8')
+}
+
+function defaultMemoryRoot() {
   const loaded = readWorkspaceConfig()
-  const sources = parseMemorySources(loaded.value)
-  // Sensible defaults keep a plain workbench useful while allowing config/env
-  // overrides. Every default remains inside WB_DIR and is read-only here.
-  const defaults = {
-    primary: ['state.md', 'state.json'],
-    secondary: ['decisions.md', 'memory.md', 'context.md'],
+  const memory = loaded.value && typeof loaded.value.memory === 'object' ? loaded.value.memory : {}
+  const candidate = String(firstValue(process.env.DSH_MEMORY_ROOT, memory.root, '') || '').trim()
+  if (candidate) {
+    const path = isAbsolute(candidate) ? resolve(candidate) : resolve(WB_DIR, candidate)
+    try {
+      if (existsSync(path) && statSync(path).isDirectory()) return canonicalPath(path)
+    } catch { /* fall through to the workbench dir */ }
   }
-  const envPrimary = normalizeSourceList(process.env.DSH_MEMORY_PRIMARY)
-  const envSecondary = normalizeSourceList(process.env.DSH_MEMORY_SECONDARY)
-  const names = {
-    primary: envPrimary.length ? envPrimary : (sources.primary.length ? sources.primary : defaults.primary),
-    secondary: envSecondary.length ? envSecondary : (sources.secondary.length ? sources.secondary : defaults.secondary),
-  }
-  const output = []
-  for (const role of ['primary', 'secondary']) {
-    for (const value of names[role].slice(0, MAX_SOURCES_PER_ROLE)) {
-      const path = sourcePath(value, WB_DIR)
-      const configured = path ? displayConfiguredSource(value, path) : '[outside-workspace]'
-      if (!path) {
-        output.push({ role, configured, exists: false, readable: false, bytes: 0, chars: 0, fingerprint: '', truncated: false, error: 'outside-workspace' })
-        continue
-      }
-      const read = safeReadBounded(path)
-      output.push({ role, configured, exists: existsSync(path), readable: !read.error, bytes: read.bytes, chars: read.text.length, fingerprint: read.text ? createHash('sha256').update(read.text).digest('hex').slice(0, 16) : '', truncated: read.truncated, error: read.error, text: boundedTail(read.text, MAX_SOURCE_CHARS) })
-    }
-  }
-  return { config: loaded, entries: output }
+  return canonicalPath(WB_DIR)
 }
 
-function memoryPreviewPayload() {
-  const loaded = sourceEntries()
-  const budget = asPositiveInt(firstValue(process.env.DSH_MEMORY_BUDGET_TOKENS, loaded.config.value?.memory?.budgetTokens, loaded.config.value?.memory?.budget_tokens), DEFAULT_MEMORY_BUDGET_TOKENS, 1000000)
-  const entries = loaded.entries
-  const primary = entries.filter(entry => entry.role === 'primary')
-  const secondary = entries.filter(entry => entry.role === 'secondary')
-  const readable = entries.filter(entry => entry.readable && entry.text)
-  const chars = readable.reduce((sum, entry) => sum + entry.chars, 0)
-  const bytes = readable.reduce((sum, entry) => sum + entry.bytes, 0)
-  const estimatedTokens = Math.ceil(chars / 4)
-  const fingerprint = createHash('sha256').update(entries.map(entry => `${entry.role}:${entry.configured}:${entry.fingerprint}`).join('|')).digest('hex').slice(0, 16)
-  let remainingPreviewChars = Math.min(MAX_SOURCE_CHARS * 2, budget * 4)
-  const snippets = []
-  for (const entry of readable) {
-    if (remainingPreviewChars <= 0) break
-    const text = entry.text.slice(0, remainingPreviewChars)
-    remainingPreviewChars -= text.length
-    snippets.push({ role: entry.role, source: entry.configured, fingerprint: entry.fingerprint, text })
+function ensureProject(rootInput, sessionId = '') {
+  const requested = String(rootInput || '').trim() || defaultMemoryRoot()
+  const lexical = isAbsolute(requested) ? resolve(requested) : resolve(WB_DIR, requested)
+  try {
+    if (!existsSync(lexical) || !statSync(lexical).isDirectory()) return { ok: false, error: '项目目录不存在：' + lexical }
+  } catch {
+    return { ok: false, error: '项目目录不可读：' + lexical }
   }
-  const publicEntry = ({ path, text, configured, ...entry }) => ({ ...entry, source: configured })
+  const root = canonicalPath(lexical)
+  const key = memoryKeyFor(root)
+  const projects = readProjects()
+  const stamp = new Date().toISOString()
+  let item = projects.items.find(entry => entry.key === key)
+  if (!item) {
+    item = { key, root, name: projectNameFor(root), sessionId: '', createdAt: stamp, updatedAt: stamp }
+    projects.items.unshift(item)
+  }
+  if (sessionId) item.sessionId = String(sessionId).slice(0, 120)
+  item.updatedAt = stamp
+  if (!projects.active) projects.active = key
+  writeProjects(projects)
+  let memory = readMemory(key)
+  if (!memory) {
+    memory = emptyMemory(key, root)
+    writeMemoryJson(memory)
+  }
+  memory.root = root
+  if (!memory.name) memory.name = projectNameFor(root)
+  return { ok: true, key, root, item, memory, projects }
+}
+
+let memoryReady = false
+
+function ensureMemoryReady() {
+  if (memoryReady) return
+  memoryReady = true
+  try { migrateLegacyState() } catch { /* best effort: memory is not a startup gate */ }
+}
+
+function activeProject() {
+  ensureMemoryReady()
+  const projects = readProjects()
+  const item = projects.items.find(entry => entry.key === projects.active) || projects.items[0]
+  if (item) {
+    const memory = readMemory(item.key)
+    if (memory) return { ok: true, key: item.key, root: item.root, item, memory, projects }
+  }
+  return ensureProject(defaultMemoryRoot())
+}
+
+// The legacy single slot (state.json / state.md / decisions.md at the workbench
+// root) is imported once, into the project whose root is the workbench itself.
+// DSH_WORKBENCH_DIR temp runs get their own copy, so tests stay isolated.
+function migrateLegacyState() {
+  const projects = readProjects()
+  if (projects.items.length) return null
+  const legacy = readJsonSafe(STATE_JSON, null)
+  const legacyDecisions = readSafe(DECISIONS)
+  const created = ensureProject(defaultMemoryRoot(), '')
+  if (!created.ok) return created
+  if (!legacy && !legacyDecisions.trim()) return created
+  const memory = created.memory
+  if (legacy && typeof legacy === 'object') {
+    memory.mainline = typeof legacy.mainline === 'string' ? legacy.mainline : memory.mainline
+    memory.stopped_at = typeof legacy.stopped_at === 'string' ? legacy.stopped_at : memory.stopped_at
+    memory.next = Array.isArray(legacy.next) ? legacy.next.map(String).filter(Boolean) : memory.next
+    memory.red_lines = Array.isArray(legacy.red_lines) ? legacy.red_lines.map(String).filter(Boolean) : memory.red_lines
+    // The old file's last write is the closest thing to a close time; without it
+    // every migrated project would look like it never closed a cycle.
+    if (typeof legacy.updated === 'string' && legacy.updated) memory.closedAt = legacy.updated
+  }
+  if (legacyDecisions.trim()) {
+    writeFileSync(memoryDecisionsPath(memory.key), legacyDecisions.replace(/\s*$/, '') + '\n', 'utf-8')
+    memory.decisions = parseDecisionIndex(legacyDecisions).slice(-20)
+  }
+  memory.migratedFrom = 'state.json+decisions.md'
+  memory.updatedAt = new Date().toISOString()
+  writeMemoryJson(memory)
+  syncAgentsFile(created.root, memory)
+  return created
+}
+
+function decisionId(at, title) {
+  return 'dec_' + createHash('sha256').update(String(at) + '|' + String(title)).digest('hex').slice(0, 10)
+}
+
+// A decision card is read by a human in a 2 KB block, so the index title is the
+// "决定" line when there is one — "背景：" describes the problem, not the choice.
+function decisionTitleFromBody(body, max = 90) {
+  const text = String(body || '')
+  const lines = text.split(/\r?\n/).map(line => line.trim()).filter(Boolean)
+  const decidedLine = lines.find(line => /^决定[：:]/.test(line))
+  if (decidedLine) return decidedLine.replace(/^决定[：:]\s*/, '').slice(0, max)
+  // Many legacy entries pack "背景…决定…" into one paragraph; the choice is the
+  // part a reader needs, so take what follows the marker when it exists.
+  const inline = /决定[：:]\s*([\s\S]+)$/.exec(text)
+  if (inline) return inline[1].replace(/\s+/g, ' ').trim().slice(0, max)
+  return (lines[0] || '').slice(0, max)
+}
+
+function parseDecisionIndex(text) {
+  const sections = []
+  let current = null
+  for (const line of String(text).split(/\r?\n/)) {
+    const heading = /^###\s+(\S+)\s*$/.exec(line.trim())
+    if (heading) {
+      if (current) sections.push(current)
+      current = { at: heading[1], lines: [] }
+      continue
+    }
+    if (current && line.trim()) current.lines.push(line.trim())
+  }
+  if (current) sections.push(current)
+  return sections.map(section => {
+    const title = decisionTitleFromBody(section.lines.join('\n'))
+    return { id: decisionId(section.at, title), at: section.at, title }
+  })
+}
+
+function appendDecision(memory, { text, title = '' }) {
+  const stamp = new Date().toISOString()
+  const body = String(text || '').trim()
+  if (!body) return memory
+  const firstLine = body.split(/\r?\n/).map(line => line.trim()).find(Boolean) || ''
+  const explicit = String(title || '').trim().slice(0, 90)
+  const heading = explicit || decisionTitleFromBody(body) || firstLine.slice(0, 90)
+  // An explicit title leads the entry so the markdown keeps the same heading
+  // the index shows; without it the body already starts with that line.
+  const entry = explicit && explicit !== firstLine ? `${explicit}\n\n${body}` : body
+  ensureDir()
+  mkdirSync(MEMORY_DIR, { recursive: true })
+  appendBounded(memoryDecisionsPath(memory.key), `\n### ${stamp}\n${entry}\n`, 120000)
+  memory.decisions = [...memory.decisions, { id: decisionId(stamp, heading), at: stamp, title: heading }].slice(-40)
+  return memory
+}
+
+function renderMemoryBlock(memory, options = {}) {
+  const decisions = options.decisions ?? 6
+  const nextCount = options.next ?? 3
+  const redCount = options.red ?? 4
+  const lines = []
+  lines.push(AGENTS_START)
+  lines.push(`## 工作台记忆 · ${memory.name || memory.key}`)
+  lines.push(`> 真源 \`memory/${memory.key}.json\`；本段由 dsh-workbench 生成，只读。`)
+  lines.push('- 主线：' + (memory.mainline || '（未填）'))
+  lines.push('- 停在哪：' + (memory.stopped_at || '（未填）'))
+  const next = memory.next.slice(0, nextCount)
+  if (next.length) {
+    lines.push('- 下一步：')
+    next.forEach((item, index) => lines.push(`  ${index + 1}. ${item}`))
+  } else {
+    lines.push('- 下一步：（未填）')
+  }
+  lines.push('- 红线：' + (memory.red_lines.length ? memory.red_lines.slice(0, redCount).join(' · ') : '（未填）'))
+  if (decisions > 0 && memory.decisions.length) {
+    const shown = memory.decisions.slice(-decisions)
+    lines.push(`- 判例（最近 ${shown.length} 条，全文用 wb_get section=decisions）：`)
+    for (const item of shown) lines.push(`  - ${String(item.at).slice(0, 10)} ${String(item.title).slice(0, 60)}`)
+  }
+  const closed = memory.closedAt
+    ? `上次收工 ${memory.closedAt.slice(0, 16)}（结论：${memory.outcome || '未记录'}）`
+    : '上次收工：无记录'
+  const basis = memory.basis && memory.basis.runId ? ` · 依据 ${memory.basis.runId}` : ''
+  lines.push('- ' + closed + basis)
+  if (memory.gapNote) lines.push('- 注意：' + memory.gapNote)
+  lines.push(AGENTS_END)
+  return lines.join('\n')
+}
+
+const BLOCK_SHAPES = [
+  { decisions: 6, next: 3, red: 4 },
+  { decisions: 4, next: 3, red: 3 },
+  { decisions: 2, next: 2, red: 2 },
+  { decisions: 0, next: 2, red: 2 },
+  { decisions: 0, next: 1, red: 1 },
+  { decisions: 0, next: 1, red: 0 },
+]
+
+function fitMemoryBlock(memory) {
+  for (const shape of BLOCK_SHAPES) {
+    const block = renderMemoryBlock(memory, shape)
+    if (Buffer.byteLength(block, 'utf8') <= MAX_AGENTS_BLOCK_BYTES) return block
+  }
+  // Last resort: a bounded summary is better than an unbounded injection.
+  const tight = {
+    ...memory,
+    mainline: String(memory.mainline || '').slice(0, 120),
+    stopped_at: String(memory.stopped_at || '').slice(0, 120),
+    next: memory.next.slice(0, 1).map(item => String(item).slice(0, 120)),
+    red_lines: memory.red_lines.slice(0, 1).map(item => String(item).slice(0, 120)),
+    decisions: [],
+  }
+  return renderMemoryBlock(tight, { decisions: 0, next: 1, red: 1 })
+}
+
+function syncAgentsFile(root, memory) {
+  const target = join(root, 'AGENTS.md')
+  const block = fitMemoryBlock(memory)
+  let existing = ''
+  try {
+    existing = existsSync(target) ? readFileSync(target, 'utf-8') : ''
+  } catch {
+    return { ok: false, path: target, bytes: 0, error: 'unreadable' }
+  }
+  const start = existing.indexOf(AGENTS_START)
+  const end = existing.indexOf(AGENTS_END)
+  let next
+  if (start >= 0 && end > start) {
+    next = existing.slice(0, start) + block + existing.slice(end + AGENTS_END.length)
+  } else if (existing.trim()) {
+    next = existing.replace(/\s*$/, '') + '\n\n' + block + '\n'
+  } else {
+    next = AGENTS_MANUAL_HEADER + block + '\n'
+  }
+  try {
+    writeFileSync(target, next, 'utf-8')
+    return { ok: true, path: target, bytes: Buffer.byteLength(block, 'utf8'), created: !existing }
+  } catch (error) {
+    return { ok: false, path: target, bytes: 0, error: String(error?.code || error?.message || 'unwritable') }
+  }
+}
+
+function saveMemory(memory, extra = {}) {
+  const next = { ...memory, ...extra, updatedAt: new Date().toISOString() }
+  writeMemoryJson(next)
+  const agents = syncAgentsFile(next.root, next)
+  return { memory: next, agents }
+}
+
+// A cycle is "closed" only when a close happened after the last work write. The
+// panel shows the open gap; nothing blocks on it.
+function memoryGap(memory) {
+  const closedAt = Date.parse(memory.closedAt || '') || 0
+  const openedAt = Date.parse(memory.openedAt || '') || 0
+  const open = openedAt > closedAt
+  let finishedAfterClose = 0
+  let lastRunId = ''
+  let lastAt = 0
+  try {
+    const root = canonicalPath(memory.root || '')
+    for (const run of readRuns()) {
+      if (!run || typeof run.cwd !== 'string' || !run.cwd) continue
+      if (canonicalPath(run.cwd) !== root) continue
+      if (!run.status || run.status === 'running' || run.status === 'queued') continue
+      const at = Number(run.updatedAt || run.createdAt || 0)
+      if (!(at > closedAt)) continue
+      finishedAfterClose += 1
+      if (at > lastAt) { lastAt = at; lastRunId = String(run.runId || '') }
+    }
+  } catch { /* run history is advisory here */ }
+  return { open, finishedAfterClose, lastRunId }
+}
+
+function publicMemory(memory) {
+  return {
+    key: memory.key,
+    name: memory.name,
+    root: memory.root,
+    mainline: memory.mainline,
+    stopped_at: memory.stopped_at,
+    next: memory.next,
+    red_lines: memory.red_lines,
+    decisions: memory.decisions,
+    outcome: memory.outcome,
+    openedAt: memory.openedAt,
+    closedAt: memory.closedAt,
+    updatedAt: memory.updatedAt,
+    migratedFrom: memory.migratedFrom,
+  }
+}
+
+function memoryPayload(resolved) {
+  const project = resolved && resolved.ok ? resolved : activeProject()
+  if (!project.ok) return { ok: false, error: project.error, active: '', items: [], memory: null }
+  const gap = memoryGap(project.memory)
+  const withGap = {
+    ...project.memory,
+    gapNote: gap.open
+      ? `上次没有收工（${gap.finishedAfterClose ? '其后还有 ' + gap.finishedAfterClose + ' 次运行完成' : '只是写了状态'}），先用 wb_close 或 wb_set 续上。`
+      : '',
+  }
   return {
     ok: true,
-    mode: 'preview',
-    execution: { enabled: false, status: 'disabled', reason: 'model execution is not implemented in phase 1' },
-    config: { loaded: Boolean(loaded.config.path), error: loaded.config.error, budgetTokens: budget },
-    memory: {
-      primary: primary.map(publicEntry),
-      secondary: secondary.map(publicEntry),
-      fingerprint,
-      budgetTokens: budget,
-      estimatedTokens,
-      remainingTokens: Math.max(0, budget - estimatedTokens),
-      sourceCount: entries.length,
-      readableCount: readable.length,
-      bytes,
-      chars,
-      snippets,
-    },
+    active: project.key,
+    root: project.root,
+    name: project.memory.name,
+    memory: { ...publicMemory(project.memory), gap },
+    agentsPath: join(project.root, 'AGENTS.md'),
+    agentsBytes: Buffer.byteLength(fitMemoryBlock(withGap), 'utf8'),
+    items: project.projects.items.map(item => ({
+      key: item.key,
+      root: item.root,
+      name: item.name,
+      sessionId: item.sessionId || '',
+      updatedAt: item.updatedAt || '',
+    })),
     fetchedAt: new Date().toISOString(),
   }
+}
+
+function memoryText(memory, { project, gap }) {
+  const lines = []
+  lines.push(`项目：${memory.name} · ${memory.root}`)
+  lines.push(`主线：${memory.mainline || '（未填）'}`)
+  lines.push(`停在哪：${memory.stopped_at || '（未填）'}`)
+  lines.push(`下一步：${memory.next.length ? memory.next.join('；') : '（未填）'}`)
+  lines.push(`红线：${memory.red_lines.length ? memory.red_lines.join('；') : '（未填）'}`)
+  lines.push(`上次收工：${memory.closedAt ? memory.closedAt.slice(0, 16) + '（' + (memory.outcome || '未记录') + '）' : '无记录'}${memory.basis?.runId ? ' · ' + memory.basis.runId : ''}`)
+  if (gap?.open) lines.push(`缺口：未收工${gap.finishedAfterClose ? '（其后 ' + gap.finishedAfterClose + ' 次运行已完成）' : ''}`)
+  if (project && project.projects && project.projects.items.length > 1) lines.push(`已知项目：${project.projects.items.length} 个（wb_get section=projects）`)
+  return lines.join('\n')
+}
+
+function resolveProjectArg(value) {
+  const text = String(value || '').trim()
+  if (!text) return activeProject()
+  ensureMemoryReady()
+  const projects = readProjects()
+  const byName = projects.items.find(item => item.key === text || item.name === text || item.root === text)
+  if (byName) {
+    const memory = readMemory(byName.key)
+    if (memory) return { ok: true, key: byName.key, root: byName.root, item: byName, memory, projects }
+  }
+  return ensureProject(text, '')
 }
 
 function serviceGet(ctx, name) {
@@ -725,21 +1059,15 @@ function auditEntries(limit = 50) {
 }
 
 function currentState() {
-  const saved = readJsonSafe(STATE_JSON, {}) || {}
+  const project = activeProject()
+  if (!project.ok) return { mainline: '', stopped_at: '', next: [], red_lines: [] }
+  const memory = project.memory
   return {
-    mainline: typeof saved.mainline === 'string' ? saved.mainline : '',
-    stopped_at: typeof saved.stopped_at === 'string' ? saved.stopped_at : '',
-    next: Array.isArray(saved.next) ? saved.next.map(String) : [],
-    red_lines: Array.isArray(saved.red_lines) ? saved.red_lines.map(String) : [],
+    mainline: memory.mainline,
+    stopped_at: memory.stopped_at,
+    next: memory.next,
+    red_lines: memory.red_lines,
   }
-}
-
-function enforceLines(text) {
-  const lines = String(text).replace(/\r\n/g, '\n').split('\n')
-  if (lines.length > 10) {
-    return { ok: false, lines: lines.slice(0, 10), note: `原内容 ${lines.length} 行，已截断到 10 行。状态文件不是日记。` }
-  }
-  return { ok: true, lines, note: '' }
 }
 
 function sendJson(res, status, value) {
@@ -756,13 +1084,19 @@ function isLoopbackReq(req) {
 }
 
 function statePayload(ctx) {
-  const state = readJsonSafe(STATE_JSON, {}) || {}
-  const stateText = readSafe(STATE_MD).slice(-8000)
-  const decisionsText = readSafe(DECISIONS)
+  // state.json used to be a third source of truth next to state.md and the
+  // panel. It is now derived: the JSON memory record is the only writer.
+  const project = activeProject()
+  const memory = project.ok ? project.memory : null
+  const gap = memory ? memoryGap(memory) : { open: false, finishedAfterClose: 0 }
+  const state = memory
+    ? { mainline: memory.mainline, stopped_at: memory.stopped_at, next: memory.next, red_lines: memory.red_lines }
+    : { mainline: '', stopped_at: '', next: [], red_lines: [] }
+  const stateText = memory ? memoryText(memory, { project, gap }) : ''
+  const decisionsText = memory ? readSafe(memoryDecisionsPath(memory.key)) : ''
   const savedLedger = readJsonSafe(LEDGER, null)
   const relayLedger = readRelayLedger()
-  const savedTasks = Array.isArray(state.tasks) ? state.tasks : []
-  const tasks = savedTasks.length ? savedTasks : readTaskCards()
+  const tasks = readTaskCards()
   const ledger = { ...relayLedger, ...(savedLedger && typeof savedLedger === 'object' ? savedLedger : {}) }
   if (ledger.greenCards === undefined && ledger.green_cards === undefined) {
     ledger.greenCards = tasks.filter(task => /绿|green|passed/i.test(String(task?.status || ''))).length
@@ -776,7 +1110,7 @@ function statePayload(ctx) {
     decisions: decisionsText.slice(-8000),
     ledger,
     tasks,
-    memoryPreview: memoryPreviewPayload(),
+    memory: memoryPayload(project),
     execution: {
       enabled: execution.enabled,
       cwd: execution.cwd,
@@ -860,6 +1194,18 @@ function noteTemplateUse(templateId) {
   template.lastUsedAt = Date.now()
   writeTemplates(templates)
   return template
+}
+
+function sessionCwd(ctx, sessionId) {
+  const id = String(sessionId || '').trim()
+  if (!id) return ''
+  try {
+    const session = serviceGet(ctx, 'sessions')?.get?.(id)
+    const cwd = firstValue(session?.meta?.cwd, session?.cwd)
+    return typeof cwd === 'string' ? cwd : ''
+  } catch {
+    return ''
+  }
 }
 
 function sessionTitle(ctx, sessionId) {
@@ -1039,31 +1385,39 @@ export async function apply(ctx) {
     },
   }))
 
-  // Phase 1 preview is deliberately GET-only and never invokes a model or
-  // writes workspace state. Keep the versioned alias for clients that pin API
-  // contracts while the short path remains convenient for the panel.
-  for (const path of [PREVIEW_API_PATH, PREVIEW_API_VERSION_PATH]) {
-    disposers.push(ctx.webServer.register({
-      kind: 'exact',
-      path,
-      handler: async (req, res) => {
-        if (!isLoopbackReq(req)) {
-          sendJson(res, 403, { ok: false, error: '只接受本机回环访问' })
-          return
-        }
-        const rejection = ctx.connection.requestRejection(req)
-        if (rejection) {
-          sendJson(res, rejection, { ok: false, error: '未通过 Harness 浏览器信任校验' })
-          return
-        }
-        if (req.method !== 'GET') {
-          sendJson(res, 405, { ok: false, error: '只支持 GET' })
-          return
-        }
-        sendJson(res, 200, memoryPreviewPayload())
-      },
-    }))
-  }
+// Memory: one authoritative record per project plus the generated AGENTS.md
+  // block. GET reads the active project; POST pinpoints the project a session
+  // works in (session cwd), which is how the panel stops guessing.
+  disposers.push(ctx.webServer.register({
+    kind: 'exact',
+    path: MEMORY_API_PATH,
+    handler: async (req, res) => {
+      if (req.method === 'GET') {
+        if (!guard(req, res, 'GET')) return
+        sendJson(res, 200, memoryPayload())
+        return
+      }
+      if (!guard(req, res, 'POST')) return
+      const body = await readJsonBody(req)
+      if (body.tooLarge) { sendJson(res, 413, { ok: false, error: '请求体过大' }); return }
+      if (body.error) { sendJson(res, 400, { ok: false, error: '请求体不是合法 JSON 对象' }); return }
+      const input = body.json
+      const requested = normaliseText(input.root, 500)
+      const sessionId = normaliseText(input.sessionId, 120)
+      if (requested === INVALID || sessionId === INVALID) {
+        sendJson(res, 400, { ok: false, error: '字段类型或长度不合法' })
+        return
+      }
+      const root = (requested && requested) || sessionCwd(ctx, sessionId || '') || defaultMemoryRoot()
+      const project = ensureProject(root, sessionId || '')
+      if (!project.ok) { sendJson(res, 400, { ok: false, error: project.error }); return }
+      const projects = readProjects()
+      projects.active = project.key
+      writeProjects(projects)
+      appendAudit({ action: 'memory.activate', requestId: requestId(input.requestId), summary: project.key + ' ' + project.root })
+      sendJson(res, 200, { ...memoryPayload(), activated: project.key })
+    },
+  }))
 
   // Model catalog is read-only: it exposes whatever the profile's llm service
   // reports so the selector can list the user's real routes, and it never
@@ -1143,15 +1497,35 @@ export async function apply(ctx) {
       }
       ensureDir()
       const stamp = new Date().toISOString()
-      const saved = { ...(readJsonSafe(STATE_JSON, {}) || {}), ...after, updated: stamp }
-      writeFileSync(STATE_JSON, JSON.stringify(saved, null, 2), 'utf-8')
+      const project = activeProject()
+      if (!project.ok) {
+        sendJson(res, 503, { ok: false, error: project.error || '项目不可用' })
+        return
+      }
+      const memory = {
+        ...project.memory,
+        mainline: after.mainline,
+        stopped_at: after.stopped_at,
+        next: after.next,
+        red_lines: after.red_lines,
+        openedAt: stamp,
+      }
+      const savedMemory = saveMemory(memory, { updatedAt: stamp })
       appendAudit({
         action: 'state.edit',
         requestId: requestId(input.requestId),
         summary: Object.keys(changes).join(', '),
         changes,
       })
-      sendJson(res, 200, { ok: true, changed: true, state: after, updated: stamp, audit: { action: 'state.edit', fields: Object.keys(changes) } })
+      sendJson(res, 200, {
+        ok: true,
+        changed: true,
+        state: after,
+        updated: stamp,
+        project: { key: project.key, root: project.root, name: savedMemory.memory.name },
+        agents: savedMemory.agents,
+        audit: { action: 'state.edit', fields: Object.keys(changes) },
+      })
     },
   }))
 
@@ -1171,13 +1545,26 @@ export async function apply(ctx) {
       }
       ensureDir()
       const stamp = new Date().toISOString()
-      appendBounded(DECISIONS, `\n### ${stamp}\n${text}\n`, 60000)
+      const project = activeProject()
+      if (!project.ok) {
+        sendJson(res, 503, { ok: false, error: project.error || '项目不可用' })
+        return
+      }
+      const memory = { ...project.memory }
+      appendDecision(memory, { text, title: normaliseText(input.title, 90) || '' })
+      const savedMemory = saveMemory(memory, { updatedAt: stamp })
       appendAudit({
         action: 'decision.append',
         requestId: requestId(input.requestId),
         summary: text.slice(0, 120),
       })
-      sendJson(res, 200, { ok: true, appended: true, ts: stamp })
+      sendJson(res, 200, {
+        ok: true,
+        appended: true,
+        ts: stamp,
+        project: { key: project.key, root: project.root, name: savedMemory.memory.name },
+        agents: savedMemory.agents,
+      })
     },
   }))
 
@@ -1413,7 +1800,7 @@ export async function apply(ctx) {
           templateTitle: template?.title || '',
           templateMissing,
           templateModuleIds: effectiveModuleIds,
-          memoryFingerprint: memoryPreviewPayload().memory.fingerprint,
+          memoryKey: activeProject().key || '',
         })
         return
       }
@@ -1612,88 +1999,148 @@ export async function apply(ctx) {
     },
   }))
 
-  disposers.push(ctx.tools.register({
+disposers.push(ctx.tools.register({
     name: 'wb_get',
-    description: '读取工作台状态摘要（主线、停在哪、下一步、红线）。细节按需读取。',
+    description: '读取工作台记忆：某项目的主线/停在哪/下一步/红线（默认当前激活项目），或判例全文、项目列表。',
     parameters: {
       type: 'object',
       additionalProperties: false,
       properties: {
-        section: { type: 'string', enum: ['state', 'decisions'], description: '可选：state 或 decisions。不填返回 state 摘要。' },
+        section: { type: 'string', enum: ['state', 'decisions', 'projects'], description: '不填返回 state 摘要；decisions 返回判例全文；projects 返回项目列表。' },
+        project: { type: 'string', description: '可选：项目名、项目 key 或根目录；默认当前激活项目。' },
       },
     },
     output: textOutput,
     async execute(args) {
-      ensureDir()
-      const section = (args && args.section) || 'state'
-      const text = section === 'decisions'
-        ? (readSafe(DECISIONS) || '(decisions.md 为空)')
-        : (readSafe(STATE_MD) || '(state.md 为空，先用 wb_set 写主线)')
-      return { text }
+      const a = args || {}
+      const project = resolveProjectArg(a.project)
+      if (!project || project.ok !== true) return { text: '读取失败：' + (project?.error || '项目不可用') }
+      const section = a.section || 'state'
+      if (section === 'projects') {
+        const projects = readProjects()
+        if (!projects.items.length) return { text: '还没有登记任何项目。' }
+        const lines = projects.items.map(item => {
+          const mark = item.key === projects.active ? '*' : ' '
+          return `${mark} ${item.name} · ${item.root} · ${String(item.updatedAt || '').slice(0, 16)}`
+        })
+        return { text: lines.join('\n') + '\n* = 当前激活项目' }
+      }
+      if (section === 'decisions') {
+        const text = readSafe(memoryDecisionsPath(project.key))
+        return { text: text.trim() || '(这个项目还没有判例)' }
+      }
+      return { text: memoryText(project.memory, { project, gap: memoryGap(project.memory) }) }
     },
   }))
 
   disposers.push(ctx.tools.register({
     name: 'wb_set',
-    description: '写回工作台状态。强制最多 10 行，超出会截断并提示。',
+    description: '写回某个项目的主线/停在哪/下一步/红线。只改传进来的字段；记忆只有一份真源，写完同步该项目根目录的 AGENTS.md。',
     parameters: {
       type: 'object',
       additionalProperties: false,
       properties: {
         mainline: { type: 'string', description: '一句话主线。' },
         stopped_at: { type: 'string', description: '当前停在哪（最多一行）。' },
-        next: { type: 'string', description: '下一步，使用分号分隔，最多三条。' },
-        red_lines: { type: 'string', description: '红线，使用分号分隔。' },
+        next: { type: 'string', description: '下一步，用分号分隔，最多三条。' },
+        red_lines: { type: 'string', description: '红线，用分号分隔。' },
+        project: { type: 'string', description: '可选：项目名、key 或根目录；默认当前激活项目。' },
       },
     },
     output: textOutput,
     async execute(args) {
-      ensureDir()
       const a = args || {}
+      const resolved = resolveProjectArg(a.project)
+      if (!resolved || resolved.ok !== true) return { text: '写入失败：' + (resolved?.error || '项目不可用') }
+      const memory = { ...resolved.memory }
       const stamp = new Date().toISOString()
-      const checked = enforceLines([
-        `mainline: ${a.mainline || '(未填)'}`,
-        `stopped_at: ${a.stopped_at || '(未填)'}`,
-        `next: ${a.next || '(未填)'}`,
-        `red_lines: ${a.red_lines || '(未填)'}`,
-        `updated: ${stamp}`,
-      ].join('\n'))
-      writeFileSync(STATE_MD, checked.lines.join('\n'), 'utf-8')
-      writeFileSync(STATE_JSON, JSON.stringify({
-        mainline: a.mainline || '',
-        stopped_at: a.stopped_at || '',
-        next: (a.next || '').split(';').map(s => s.trim()).filter(Boolean),
-        red_lines: (a.red_lines || '').split(';').map(s => s.trim()).filter(Boolean),
-        updated: stamp,
-      }, null, 2), 'utf-8')
-      return { text: checked.ok ? 'state 已写回。' : `state 已写回（截断）。${checked.note}` }
+      const mainline = normaliseText(a.mainline, 500)
+      const stopped = normaliseText(a.stopped_at, 500)
+      const next = normaliseList(typeof a.next === 'string' ? a.next.split(';').join('\n') : a.next, 10, 500)
+      const redLines = normaliseList(typeof a.red_lines === 'string' ? a.red_lines.split(';').join('\n') : a.red_lines, 20, 300)
+      if (mainline === INVALID || stopped === INVALID || next === INVALID || redLines === INVALID) {
+        return { text: '写入失败：字段类型或长度不合法。' }
+      }
+      const changed = []
+      if (mainline !== undefined) { memory.mainline = mainline; changed.push('mainline') }
+      if (stopped !== undefined) { memory.stopped_at = stopped; changed.push('stopped_at') }
+      if (next !== undefined) { memory.next = next.slice(0, 3); changed.push('next') }
+      if (redLines !== undefined) { memory.red_lines = redLines; changed.push('red_lines') }
+      if (!changed.length) return { text: '没有可写的字段（mainline/stopped_at/next/red_lines 至少给一个）。' }
+      memory.openedAt = stamp
+      const saved = saveMemory(memory, { updatedAt: stamp })
+      appendAudit({ action: 'memory.set', requestId: resolved.key, summary: changed.join(', ') })
+      const agents = saved.agents
+      const note = agents.ok
+        ? `AGENTS.md 已同步（生成块 ${agents.bytes} 字节）`
+        : `AGENTS.md 未写入：${agents.error}（记忆 JSON 已写入）`
+      return {
+        text: [
+          `已写回 ${saved.memory.name} · ${saved.memory.root}`,
+          `字段：${changed.join(', ')}`,
+          note,
+          '若本次工作在另一个目录，用 project 参数指定，别把记忆写到错的项目。',
+        ].join('\n'),
+      }
     },
   }))
 
   disposers.push(ctx.tools.register({
     name: 'wb_close',
-    description: '收尾：写入下一步和时间戳，并将判断追加到 decisions.md。',
+    description: '收工：写入下次第一步、结论颜色与判断，判断追加进判例，并重新生成 AGENTS.md。',
     parameters: {
       type: 'object',
       additionalProperties: false,
       required: ['next'],
       properties: {
         next: { type: 'string', description: '下次开工的第一步（必填）。' },
-        decision: { type: 'string', description: '可选：背景/决定/代价，追加到 decisions.md。' },
+        decision: { type: 'string', description: '可选：背景/决定/代价，追加进判例。' },
+        title: { type: 'string', description: '可选：这条判例的标题（默认取 decision 第一行）。' },
+        outcome: { type: 'string', enum: ['green', 'yellow', 'red'], description: '可选：本轮结论颜色。green 必须脚本通过且产物存在；没验证就留空。' },
+        runId: { type: 'string', description: '可选：本轮对应的派发 runId。' },
+        sessionId: { type: 'string', description: '可选：本轮所在会话。' },
+        project: { type: 'string', description: '可选：项目名、key 或根目录；默认当前激活项目。' },
       },
     },
     output: textOutput,
     async execute(args) {
-      ensureDir()
       const a = args || {}
+      const resolved = resolveProjectArg(a.project)
+      if (!resolved || resolved.ok !== true) return { text: '收工失败：' + (resolved?.error || '项目不可用') }
       const stamp = new Date().toISOString()
-      const json = readJsonSafe(STATE_JSON, {}) || {}
-      json.next = (a.next || '').split(';').map(s => s.trim()).filter(Boolean)
-      json.updated = stamp
-      writeFileSync(STATE_JSON, JSON.stringify(json, null, 2), 'utf-8')
-      appendBounded(STATE_MD, `\n## 收尾 ${stamp}\nnext: ${a.next || ''}\n`)
-      if (a.decision) appendBounded(DECISIONS, `\n### ${stamp}\n${a.decision}\n`)
-      return { text: `已收尾；decisions ${a.decision ? '已追加一条。' : '未追加。'}` }
+      const memory = { ...resolved.memory }
+      const next = normaliseList(typeof a.next === 'string' ? a.next.split(';').join('\n') : a.next, 3, 500)
+      if (next === INVALID || !next || !next.length) return { text: '收工失败：next 不能为空。' }
+      const outcome = normaliseText(a.outcome, 20)
+      const runId = normaliseText(a.runId, 80)
+      const sessionId = normaliseText(a.sessionId, 120)
+      const decision = normaliseText(a.decision, 4000)
+      const title = normaliseText(a.title, 90)
+      if (outcome === INVALID || runId === INVALID || sessionId === INVALID || decision === INVALID || title === INVALID) {
+        return { text: '收工失败：字段类型或长度不合法。' }
+      }
+      memory.next = next.slice(0, 3)
+      memory.closedAt = stamp
+      if (outcome) memory.outcome = outcome
+      memory.basis = {
+        runId: runId || memory.basis.runId,
+        sessionId: sessionId || memory.basis.sessionId,
+      }
+      if (decision) appendDecision(memory, { text: decision, title: title || '' })
+      const saved = saveMemory(memory, { updatedAt: stamp })
+      appendAudit({ action: 'memory.close', requestId: saved.memory.key, summary: (outcome || 'no-outcome') + ' ' + next[0].slice(0, 80) })
+      const gap = memoryGap(saved.memory)
+      const official = outcome || '未记录（green 需要脚本通过且产物存在）'
+      return {
+        text: [
+          `已收工：${saved.memory.name}`,
+          `下一步：${next.join('；')}`,
+          `结论：${official}${runId ? ' · ' + runId : ''}`,
+          decision ? '判例：已追加一条。' : '判例：未追加。',
+          saved.agents.ok ? `AGENTS.md：已同步（生成块 ${saved.agents.bytes} 字节）。` : `AGENTS.md：未写入（${saved.agents.error}）。`,
+          gap.open ? '缺口仍在：收工标记没有覆盖最后一次写入，请检查。' : '',
+        ].filter(Boolean).join('\n'),
+      }
     },
   }))
 

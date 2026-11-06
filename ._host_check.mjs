@@ -12,10 +12,28 @@ const indexUrl = new URL('./index.js', here)
 const tempRoot = mkdtempSync(join(tmpdir(), 'dsh-workbench-host-check-'))
 const tempWorkspace = join(tempRoot, 'workspace')
 mkdirSync(tempWorkspace, { recursive: true })
-writeFileSync(join(tempWorkspace, 'primary.md'), 'Primary memory fixture.\n', 'utf8')
-writeFileSync(join(tempWorkspace, 'secondary.md'), 'Secondary memory fixture.\n', 'utf8')
+// v1.0: the project root carries a hand-written AGENTS.md section the generator
+// must never touch, plus a legacy state.json/decisions.md snapshot that has to
+// be imported exactly once.
+writeFileSync(join(tempWorkspace, 'AGENTS.md'), '# 手工区\n\n- 这条是用户自己写的，生成器不许动。\n', 'utf8')
+writeFileSync(join(tempWorkspace, 'state.json'), JSON.stringify({
+  mainline: '迁移主线：v0.8 画布已完成',
+  stopped_at: '等重启验证',
+  next: ['重启 DSH', '验画布'],
+  red_lines: ['判断不下放', '没有 executor 的节点必须灰显'],
+}, null, 2), 'utf8')
+writeFileSync(join(tempWorkspace, 'decisions.md'), [
+  '',
+  '### 2026-11-05T10:00:00.000Z',
+  '背景：旧的决定。',
+  '决定：保留只读画布。',
+  '',
+  '### 2026-11-06T10:00:00.000Z',
+  '背景：记忆有三套半系统。',
+  '决定：只留 JSON 真源。',
+  '',
+].join('\n'), 'utf8')
 writeFileSync(join(tempWorkspace, 'workbench.config.json'), JSON.stringify({
-  memory: { primary: ['primary.md'], secondary: ['secondary.md'], budgetTokens: 91 },
   execution: { enabled: true, cwd: '.' },
 }), 'utf8')
 process.env.DSH_WORKBENCH_DIR = tempWorkspace
@@ -99,8 +117,7 @@ const mod = await import(indexUrl)
 await mod.apply(ctx)
 
 const route = registered.find(r => r.regType === 'web' && r.path === '/dsh-workbench/api/state-v2')
-const previewRoute = registered.find(r => r.regType === 'web' && r.path === '/dsh-workbench/api/preview')
-const previewVersionRoute = registered.find(r => r.regType === 'web' && r.path === '/dsh-workbench/api/preview-v1')
+const memoryRoute = registered.find(r => r.regType === 'web' && r.path === '/dsh-workbench/api/memory')
 const modelsRoute = registered.find(r => r.regType === 'web' && r.path === '/dsh-workbench/api/models')
 const stateEditRoute = registered.find(r => r.regType === 'web' && r.path === '/dsh-workbench/api/state-edit')
 const decisionRoute = registered.find(r => r.regType === 'web' && r.path === '/dsh-workbench/api/decision-add')
@@ -116,7 +133,7 @@ const toolNames = registered.filter(r => r.regType === 'tool').map(r => r.name)
 
 console.log('registered count:', registered.length)
 console.log('route path:', route?.path)
-console.log('preview paths:', previewRoute?.path, previewVersionRoute?.path)
+console.log('memory path:', memoryRoute?.path)
 console.log('models path:', modelsRoute?.path)
 console.log('write paths:', stateEditRoute?.path, decisionRoute?.path, auditRoute?.path)
 console.log('dispatch paths:', dispatchRoute?.path, runsRoute?.path, runsCancelRoute?.path)
@@ -126,7 +143,7 @@ console.log('tool names:', toolNames)
 
 const ok =
   route && route.path === '/dsh-workbench/api/state-v2' &&
-  previewRoute && previewVersionRoute && modelsRoute && stateEditRoute && decisionRoute && auditRoute &&
+  memoryRoute && modelsRoute && stateEditRoute && decisionRoute && auditRoute &&
   dispatchRoute && runsRoute && runsCancelRoute && sessionsRoute && modulesRoute && reportRoute && templatesRoute &&
   ['wb_get', 'wb_set', 'wb_close', 'wb_models', 'wb_runs'].every(n => toolNames.includes(n)) &&
   toolNames.length === 5
@@ -185,30 +202,70 @@ if (!Array.isArray(payload.ledger?.rows) || payload.ledger.rows.length === 0) {
   console.error('FAIL: relay sibling not resolved — ledger rows empty')
   process.exit(1)
 }
-// Preview is loopback + trusted-connection guarded, GET-only, and must expose
-// a disabled execution marker instead of attempting a model call.
-const previewResponse = { statusCode: 0, headers: {}, setHeader(k, v) { this.headers[k] = v }, end(body) { this.body = body } }
-await previewRoute.handler({ method: 'GET', headers: { host: '127.0.0.1:55293' }, url: previewRoute.path }, previewResponse)
-if (previewResponse.statusCode !== 200) { console.error('FAIL: preview status', previewResponse.statusCode); process.exit(1) }
-const preview = JSON.parse(previewResponse.body)
-if (preview.ok !== true || preview.mode !== 'preview' || preview.execution?.enabled !== false || !preview.memory?.fingerprint) {
-  console.error('FAIL: preview payload', preview)
+// Memory (v1.0): one JSON truth per project root, one generated AGENTS.md
+// block. The legacy state.json/decisions.md pair is imported exactly once, and
+// the hand-written section of AGENTS.md must survive every regeneration.
+const memoryResponse = { statusCode: 0, headers: {}, setHeader(k, v) { this.headers[k] = v }, end(body) { this.body = body } }
+await memoryRoute.handler({ method: 'GET', headers: { host: '127.0.0.1:55293' }, url: memoryRoute.path }, memoryResponse)
+if (memoryResponse.statusCode !== 200) { console.error('FAIL: memory status', memoryResponse.statusCode, memoryResponse.body); process.exit(1) }
+const memory = JSON.parse(memoryResponse.body)
+if (memory.ok !== true || !memory.active || memory.root !== realpathSync(tempWorkspace)) {
+  console.error('FAIL: memory payload', memory)
   process.exit(1)
 }
-if (preview.config?.budgetTokens !== 91 || preview.memory?.primary?.[0]?.source !== 'primary.md' || preview.memory?.secondary?.[0]?.source !== 'secondary.md') {
-  console.error('FAIL: configured sources/budget not resolved', preview.config, preview.memory)
+const memoryFile = join(tempWorkspace, 'memory', memory.active + '.json')
+const stored = JSON.parse(readFileSync(memoryFile, 'utf8'))
+if (stored.mainline !== '迁移主线：v0.8 画布已完成' || stored.next.length !== 2 || stored.red_lines.length !== 2) {
+  console.error('FAIL: legacy state.json not migrated', stored)
   process.exit(1)
 }
-if (!preview.memory.snippets.some(item => item.text.includes('Primary memory fixture')) || JSON.stringify(preview).includes(tempRoot)) {
-  console.error('FAIL: preview content/path sanitization', preview.memory)
+if (stored.migratedFrom !== 'state.json+decisions.md' || stored.decisions.length !== 2) {
+  console.error('FAIL: legacy decisions not indexed', stored.migratedFrom, stored.decisions)
   process.exit(1)
 }
-const blockedResponse = { statusCode: 0, headers: {}, setHeader(k, v) { this.headers[k] = v }, end(body) { this.body = body } }
-await previewRoute.handler({ method: 'POST', headers: { host: '127.0.0.1:55293' }, url: previewRoute.path }, blockedResponse)
-if (blockedResponse.statusCode !== 405) { console.error('FAIL: preview accepted non-GET', blockedResponse.statusCode); process.exit(1) }
-console.log('preview.mode:', preview.mode)
-console.log('preview.execution:', preview.execution.status)
-console.log('preview.memory.fingerprint:', preview.memory.fingerprint)
+const agentsText = readFileSync(join(tempWorkspace, 'AGENTS.md'), 'utf8')
+if (!agentsText.includes('这条是用户自己写的，生成器不许动。')) {
+  console.error('FAIL: manual AGENTS.md section was overwritten', agentsText)
+  process.exit(1)
+}
+if (!agentsText.includes('<!-- dsh-workbench:generated:start -->') || !agentsText.includes('<!-- dsh-workbench:generated:end -->')) {
+  console.error('FAIL: generated block markers missing', agentsText)
+  process.exit(1)
+}
+if (!agentsText.includes('迁移主线：v0.8 画布已完成')) {
+  console.error('FAIL: mainline not rendered into AGENTS.md')
+  process.exit(1)
+}
+const blockStart = agentsText.indexOf('<!-- dsh-workbench:generated:start -->')
+const blockEnd = agentsText.indexOf('<!-- dsh-workbench:generated:end -->', blockStart)
+const generatedBlock = agentsText.slice(blockStart, blockEnd)
+const generatedBytes = Buffer.byteLength(generatedBlock, 'utf8')
+if (generatedBytes > 2048) {
+  console.error('FAIL: generated block over budget', generatedBytes)
+  process.exit(1)
+}
+// state-v2 must be derived from the same record (state.json is no longer read).
+if (payload.memory?.active !== memory.active || payload.state?.mainline !== stored.mainline) {
+  console.error('FAIL: state-v2 memory not derived from the record', payload.memory?.active, payload.state?.mainline)
+  process.exit(1)
+}
+// Regeneration is idempotent: exactly one block, manual text intact.
+const memoryAgain = { statusCode: 0, headers: {}, setHeader(k, v) { this.headers[k] = v }, end(body) { this.body = body } }
+await memoryRoute.handler({ method: 'GET', headers: { host: '127.0.0.1:55293' }, url: memoryRoute.path }, memoryAgain)
+const agentsAgain = readFileSync(join(tempWorkspace, 'AGENTS.md'), 'utf8')
+if ((agentsAgain.match(/dsh-workbench:generated:start/g) || []).length !== 1 || !agentsAgain.includes('这条是用户自己写的，生成器不许动。')) {
+  console.error('FAIL: generated block duplicated or manual text lost', agentsAgain)
+  process.exit(1)
+}
+// Loopback only.
+const remoteMemory = { statusCode: 0, headers: {}, setHeader(k, v) { this.headers[k] = v }, end(body) { this.body = body } }
+await memoryRoute.handler({ method: 'GET', headers: { host: '10.0.0.7:55293' }, url: memoryRoute.path }, remoteMemory)
+if (remoteMemory.statusCode !== 403) { console.error('FAIL: memory accepted remote host', remoteMemory.statusCode); process.exit(1) }
+console.log('memory.active:', memory.active)
+console.log('memory.root:', memory.root)
+console.log('memory.agentsBytes:', generatedBytes)
+console.log('memory.decisions:', stored.decisions.length)
+console.log('memory.migratedFrom:', stored.migratedFrom)
 
 // Model catalog: read-only, reflects the llm service, and never issues a model
 // request (streamCalls must stay 0).
@@ -261,9 +318,18 @@ await stateEditRoute.handler(postReq(stateEditRoute.path, {
 if (editRes.statusCode !== 200) { console.error('FAIL: state-edit status', editRes.statusCode, editRes.body); process.exit(1) }
 const edited = JSON.parse(editRes.body)
 if (edited.ok !== true || edited.changed !== true) { console.error('FAIL: state-edit result', edited); process.exit(1) }
-const savedState = JSON.parse(readFileSync(join(tempWorkspace, 'state.json'), 'utf8'))
-if (savedState.mainline !== '面板主线：闭环验证' || savedState.next.length !== 2) {
-  console.error('FAIL: state.json not written', savedState)
+if (edited.project?.key !== memory.active || edited.agents?.ok !== true || edited.agents.bytes > 2048) {
+  console.error('FAIL: state-edit did not write the project record', edited.project, edited.agents)
+  process.exit(1)
+}
+// The edit lands in the project JSON, not in a second state.json.
+const editedState = JSON.parse(readFileSync(memoryFile, 'utf8'))
+if (editedState.mainline !== '面板主线：闭环验证' || editedState.next.length !== 2) {
+  console.error('FAIL: project memory not written by state-edit', editedState)
+  process.exit(1)
+}
+if (JSON.parse(readFileSync(join(tempWorkspace, 'state.json'), 'utf8')).mainline !== '迁移主线：v0.8 画布已完成') {
+  console.error('FAIL: legacy state.json was rewritten (it must stay untouched)')
   process.exit(1)
 }
 
@@ -282,10 +348,117 @@ if (hugeRes.statusCode !== 413) { console.error('FAIL: oversized body accepted',
 const decisionRes = response()
 await decisionRoute.handler(postReq(decisionRoute.path, { text: '审计决策：面板写入路径已接通。', requestId: 'harness-decision-1' }), decisionRes)
 if (decisionRes.statusCode !== 200) { console.error('FAIL: decision-add status', decisionRes.statusCode, decisionRes.body); process.exit(1) }
-if (!readFileSync(join(tempWorkspace, 'decisions.md'), 'utf8').includes('审计决策：面板写入路径已接通。')) {
-  console.error('FAIL: decision not appended')
+const projectDecisionsFile = join(tempWorkspace, 'memory', memory.active + '.decisions.md')
+if (!readFileSync(projectDecisionsFile, 'utf8').includes('审计决策：面板写入路径已接通。')) {
+  console.error('FAIL: decision not appended to the project record')
   process.exit(1)
 }
+const decisionsAfterAppend = JSON.parse(readFileSync(memoryFile, 'utf8')).decisions
+if (decisionsAfterAppend.length !== 3 || decisionsAfterAppend[2].title !== '审计决策：面板写入路径已接通。') {
+  console.error('FAIL: decision index not updated', decisionsAfterAppend)
+  process.exit(1)
+}
+
+// Tools: wb_get / wb_set / wb_close operate on the same record and the same
+// generated block. wb_close is the only writer of the close outcome.
+const tool = name => registered.find(r => r.regType === 'tool' && r.name === name)
+const setTool = await tool('wb_set').execute({ mainline: '工具写回：v1.0 记忆收口', next: '验工具; 验画布' })
+if (!String(setTool.text).includes('已写回')) { console.error('FAIL: wb_set text', setTool.text); process.exit(1) }
+const afterSet = JSON.parse(readFileSync(memoryFile, 'utf8'))
+if (afterSet.mainline !== '工具写回：v1.0 记忆收口' || afterSet.next.length !== 2 || afterSet.openedAt === '') {
+  console.error('FAIL: wb_set did not write the record', afterSet)
+  process.exit(1)
+}
+const agentsAfterSet = readFileSync(join(tempWorkspace, 'AGENTS.md'), 'utf8')
+if (!agentsAfterSet.includes('工具写回：v1.0 记忆收口') || !agentsAfterSet.includes('这条是用户自己写的，生成器不许动。')) {
+  console.error('FAIL: wb_set did not regenerate AGENTS.md correctly')
+  process.exit(1)
+}
+
+const getState = await tool('wb_get').execute({ section: 'state' })
+if (!String(getState.text).includes('工具写回：v1.0 记忆收口') || !String(getState.text).includes('缺口')) {
+  console.error('FAIL: wb_get state', getState.text)
+  process.exit(1)
+}
+const closeTool = await tool('wb_close').execute({
+  next: '重启 DSH 后按清单验收',
+  decision: '背景：记忆有三套半。决定：只留 JSON 真源 + 生成块。代价：旧 memory 预览下线。',
+  title: 'v1.0 记忆收口',
+  outcome: 'yellow',
+  runId: 'run_tool_close_1',
+})
+if (!String(closeTool.text).includes('已收工')) { console.error('FAIL: wb_close text', closeTool.text); process.exit(1) }
+const afterClose = JSON.parse(readFileSync(memoryFile, 'utf8'))
+if (!afterClose.closedAt || afterClose.outcome !== 'yellow' || afterClose.basis.runId !== 'run_tool_close_1') {
+  console.error('FAIL: wb_close did not record the close', afterClose)
+  process.exit(1)
+}
+const closedDecisions = afterClose.decisions
+if (closedDecisions[closedDecisions.length - 1].title !== 'v1.0 记忆收口') {
+  console.error('FAIL: wb_close decision title', closedDecisions)
+  process.exit(1)
+}
+const getDecisions = await tool('wb_get').execute({ section: 'decisions' })
+if (!String(getDecisions.text).includes('v1.0 记忆收口')) {
+  console.error('FAIL: wb_get decisions', getDecisions.text)
+  process.exit(1)
+}
+
+// A second project gets its own record and its own AGENTS.md; the first one is
+// untouched. This is the whole point of per-project memory.
+const secondProject = join(tempWorkspace, 'proj-second')
+mkdirSync(secondProject, { recursive: true })
+const secondRes = response()
+await memoryRoute.handler(postReq(memoryRoute.path, { root: secondProject, sessionId: 'sess-harness-1', requestId: 'harness-memory-2' }), secondRes)
+if (secondRes.statusCode !== 200) { console.error('FAIL: memory activate status', secondRes.statusCode, secondRes.body); process.exit(1) }
+const second = JSON.parse(secondRes.body)
+if (second.active === memory.active || second.root !== realpathSync(secondProject)) {
+  console.error('FAIL: second project not activated', second.active, second.root)
+  process.exit(1)
+}
+const secondSet = await tool('wb_set').execute({ mainline: '第二个项目：互不干扰' })
+if (!String(secondSet.text).includes('已写回')) { console.error('FAIL: second wb_set', secondSet.text); process.exit(1) }
+const secondAgents = readFileSync(join(secondProject, 'AGENTS.md'), 'utf8')
+if (!secondAgents.includes('第二个项目：互不干扰') || !secondAgents.includes('# AGENTS.md')) {
+  console.error('FAIL: second project AGENTS.md', secondAgents)
+  process.exit(1)
+}
+if (JSON.parse(readFileSync(memoryFile, 'utf8')).mainline !== '工具写回：v1.0 记忆收口') {
+  console.error('FAIL: first project overwritten by second project write')
+  process.exit(1)
+}
+const listTool = await tool('wb_get').execute({ section: 'projects' })
+if (!String(listTool.text).includes('proj-second') || !String(listTool.text).includes('* = 当前激活项目')) {
+  console.error('FAIL: wb_get projects', listTool.text)
+  process.exit(1)
+}
+
+// The generated block is bounded even when every field is at its limit: the
+// harness injects this file, so a 20 KB block would be a transcript.
+const fatProject = join(tempWorkspace, 'proj-fat')
+mkdirSync(fatProject, { recursive: true })
+const fatRes = response()
+await memoryRoute.handler(postReq(memoryRoute.path, { root: fatProject }), fatRes)
+const fatSet = await tool('wb_set').execute({
+  mainline: '长'.repeat(500),
+  stopped_at: '停'.repeat(500),
+  next: ['一'.repeat(500), '二'.repeat(500), '三'.repeat(500)].join(';'),
+  red_lines: Array.from({ length: 20 }, (_, i) => `红线${i}：` + '禁'.repeat(280)).join(';'),
+})
+if (!String(fatSet.text).includes('已写回')) { console.error('FAIL: fat wb_set', fatSet.text); process.exit(1) }
+const fatAgents = readFileSync(join(fatProject, 'AGENTS.md'), 'utf8')
+const fatStart = fatAgents.indexOf('<!-- dsh-workbench:generated:start -->')
+const fatEnd = fatAgents.indexOf('<!-- dsh-workbench:generated:end -->', fatStart)
+const fatBlock = fatAgents.slice(fatStart, fatEnd)
+if (fatStart < 0 || fatEnd < 0 || Buffer.byteLength(fatBlock, 'utf8') > 2048) {
+  console.error('FAIL: generated block exceeded the budget with fat fields', Buffer.byteLength(fatBlock, 'utf8'))
+  process.exit(1)
+}
+// Restore the first project as the active one for the rest of the harness.
+const restoreRes = response()
+await memoryRoute.handler(postReq(memoryRoute.path, { root: tempWorkspace }), restoreRes)
+console.log('memory.second:', second.active)
+console.log('memory.fatBlockBytes:', Buffer.byteLength(fatBlock, 'utf8'))
 
 const auditRes = response()
 await auditRoute.handler(getReq(auditRoute.path + '?limit=10'), auditRes)
