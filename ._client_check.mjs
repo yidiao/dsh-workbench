@@ -197,6 +197,9 @@ globalThis.fetch = async (raw, options) => {
       id: 'tpl_1', title: '行数巡检模板', goal: '模板目标：统计 md 行数 top3',
       plan: '模板计划：先扫描再排序', instruction: '模板指令：只读不改文件',
       moduleIds: ['mod_2'], model: 'deepseek-official/deepseek-flash', sessionMode: 'new', uses: 4,
+    }, {
+      id: 'tpl_fly', title: '飞轮推荐模板', goal: '飞轮目标：写一段周报摘要',
+      plan: '', instruction: '', moduleIds: [], model: '', sessionMode: 'new', uses: 3,
     }],
   })
   if (path === '/dsh-workbench/api/live') return ok({
@@ -229,6 +232,21 @@ globalThis.fetch = async (raw, options) => {
     agents: { ok: true, bytes: 900 }, gap: { open: false },
   })
   if (path === '/dsh-workbench/api/memory') return ok({ ok: true, active: 'abc123', memory: statePayload().memory.memory })
+  if (path === '/dsh-workbench/api/flywheel') return ok({
+    ok: true,
+    cards: [],
+    candidates: [{
+      id: 'tpl_fly', title: '飞轮推荐模板', green: 3, red: 0, greenRate: 1,
+      costPerGreen: { input: 750, output: 150, cacheRead: 200, cacheWrite: 50 },
+      reuseAfterPromotion: 2, because: '3 绿 / 0 红 · 绿率 100%',
+    }, {
+      id: 'tpl_gone_now', title: '已消失的模板', green: 2, red: 0, greenRate: 1,
+      costPerGreen: null, reuseAfterPromotion: 2, because: '2 绿 / 0 红 · 绿率 100%',
+    }],
+    rules: { promote: '2 green', demote: '1 red', decay: '30 days', cost: 'per green' },
+    totals: { templates: 2, recorded: 5, promoted: 2, demoted: 0, archived: 0 },
+    fetchedAt: '2026-11-06T12:00:00.000Z',
+  })
   if (path === '/dsh-workbench/api/flow') return ok(graphPayload())
   if (path === '/dsh-workbench/api/flow/run') {
     const payload = graphPayload()
@@ -445,6 +463,33 @@ if (!asyncButton?.props.disabled) fail('sync button still enabled for long work'
 if (!findClass(tree, 'wb-compose')) fail('long work did not open the dispatch form', tree)
 console.log('channel: long work is refused in place and the dispatch form opens')
 
+// the flywheel recommends, and one click puts the recipe back in the form
+if (!findClass(tree, 'wb-fly')) fail('attach moment did not render the flywheel card', tree)
+if (!includesText(tree, '飞轮推荐模板')) fail('a promoted candidate is not listed', tree)
+if (!includesText(tree, '3 绿 / 0 红')) fail('the candidate does not say why it is recommended', tree)
+if (!includesText(tree, '750 in / 150 out')) fail('per-green cost not shown', tree)
+if (!includesText(tree, 'flyCostUnknown')) fail('an unknown cost must say unknown instead of a number', tree)
+const resumeButton = findNode(tree, n => n.type === 'button' && n.props?.className === 'wb-mini' && findText(n.props?.children, 'flyResume'))
+if (!resumeButton) fail('no continue button on the recommendation', tree)
+resumeButton.props.onClick()
+tree = renderPanel()
+const flyGoal = findNode(tree, n => n.type === 'input' && n.props?.id === 'wb-goal')
+if (!flyGoal || flyGoal.props.value !== '飞轮目标：写一段周报摘要') fail('continue did not fill the form from the template', tree)
+if (!includesText(tree, 'flyFilled')) fail('continue did not confirm', tree)
+const goneButton = findNode(tree, n => n.type === 'button' && n.props?.className === 'wb-mini' && findText(n.props?.children, 'flyResume'))
+if (!goneButton) fail('second candidate has no continue button')
+const allResume = []
+const walk = node => {
+  if (!node || typeof node !== 'object') return
+  if (Array.isArray(node)) { node.forEach(walk); return }
+  if (node.type === 'button' && findText(node.props?.children, 'flyResume')) allResume.push(node)
+  walk(node.props?.children)
+}
+walk(tree)
+allResume[allResume.length - 1].props.onClick()
+tree = renderPanel()
+if (!includesText(tree, 'flyMissing')) fail('a candidate whose template vanished must say so', tree)
+
 // --- 4. the reused composer still assembles from a module and a template ---
 const templateSelect = findNode(tree, n => n.type === 'select' && n.props?.id === 'wb-template')
 if (!templateSelect) fail('template selector missing in the dispatch form', tree)
@@ -469,6 +514,7 @@ insertOne.props.onClick()
 tree = renderPanel()
 const goalFromModule = findNode(tree, n => n.type === 'input' && n.props?.id === 'wb-goal')
 if (!String(goalFromModule.props.value).includes('统计 md 行数并给出 top3')) fail('module did not fill the goal slot', tree)
+console.log('flywheel: promoted candidate with reason + per-green cost, unknown cost says unknown, continue refills the form, a vanished template says so')
 console.log('graph: verified green, no-executor gray, run carries confirm:true, refused graph cannot run')
 console.log('composer: template fills the slots, module insertion still works')
 

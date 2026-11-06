@@ -86,6 +86,8 @@ const FLOW_EDGE_API_PATH = '/dsh-workbench/api/flow/edge'
 const FLOW_EDGE_DELETE_API_PATH = '/dsh-workbench/api/flow/edge/delete'
 const FLOW_RUN_API_PATH = '/dsh-workbench/api/flow/run'
 const FLOW_VERIFY_API_PATH = '/dsh-workbench/api/flow/verify'
+const FLYWHEEL_API_PATH = '/dsh-workbench/api/flywheel'
+const OUTCOME_API_PATH = '/dsh-workbench/api/outcome'
 const MODELS_API_PATH = '/dsh-workbench/api/models'
 const STATE_EDIT_API_PATH = '/dsh-workbench/api/state-edit'
 const DECISION_API_PATH = '/dsh-workbench/api/decision-add'
@@ -1170,6 +1172,156 @@ function statePayload(ctx) {
   }
 }
 
+// ---- v1.0 Phase D: the flywheel ---------------------------------------------
+//
+// A colour is a claim, so it has to be cheap to record and impossible to fake:
+// green means a script passed AND the artifact exists, and yellow is "a human
+// looked". Red must carry a reason, and one red demotes a card — it has to earn
+// two fresh greens before it is recommended again. Everything else here is
+// arithmetic over the records: promotion, per-green cost, ranking, decay.
+
+const OUTCOMES = join(WB_DIR, 'outcomes.json')
+const MAX_OUTCOMES = 400
+const OUTCOME_COLOURS = ['green', 'yellow', 'red']
+const DECAY_DAYS = 30
+
+function readOutcomes() {
+  const raw = readJsonSafe(OUTCOMES, null)
+  return { version: 1, items: Array.isArray(raw?.items) ? raw.items.filter(item => item && typeof item === 'object') : [] }
+}
+
+function writeOutcomes(value) {
+  ensureDir()
+  const items = value.items.slice(0, MAX_OUTCOMES)
+  writeFileSync(OUTCOMES, JSON.stringify({ version: 1, items }, null, 2) + '\n', 'utf-8')
+}
+
+function normaliseTokens(raw) {
+  if (!raw || typeof raw !== 'object') return null
+  const pick = key => {
+    const value = Number(raw[key])
+    return Number.isFinite(value) && value >= 0 ? Math.round(value) : 0
+  }
+  const tokens = { input: pick('input'), output: pick('output'), cacheRead: pick('cacheRead'), cacheWrite: pick('cacheWrite') }
+  if (!tokens.input && !tokens.output && !tokens.cacheRead && !tokens.cacheWrite) return null
+  return tokens
+}
+
+// One outcome per run: recording again replaces the previous colour instead of
+// double counting the same work.
+function recordOutcome(entry) {
+  const store = readOutcomes()
+  const ratio = {
+    runId: entry.runId,
+    templateId: entry.templateId || '',
+    templateTitle: entry.templateTitle || '',
+    colour: entry.colour,
+    reason: entry.reason || '',
+    tokens: normaliseTokens(entry.tokens),
+    at: entry.at || Date.now(),
+  }
+  const items = [ratio, ...store.items.filter(item => item.runId !== ratio.runId)]
+  writeOutcomes({ items })
+  return ratio
+}
+
+function templateOutcomeCards() {
+  const templates = readTemplates()
+  const runs = readRuns()
+  const outcomes = readOutcomes().items
+  const now = Date.now()
+  const cards = templates.map(template => {
+    const records = outcomes
+      .filter(item => item.templateId === template.id)
+      .sort((left, right) => left.at - right.at)
+    let greens = 0
+    let reds = 0
+    let greenStreak = 0
+    let promotedAt = 0
+    let tokens = null
+    for (const record of records) {
+      if (record.colour === 'green') {
+        greens += 1
+        greenStreak += 1
+        if (greenStreak >= 2 && !promotedAt) promotedAt = record.at
+      } else if (record.colour === 'red') {
+        reds += 1
+        greenStreak = 0
+        promotedAt = 0
+      }
+      if (record.tokens) {
+        tokens = tokens || { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+        for (const key of ['input', 'output', 'cacheRead', 'cacheWrite']) tokens[key] += Number(record.tokens[key]) || 0
+      }
+    }
+    const promoted = greens >= 2 && greenStreak >= 2
+    const demoted = reds > 0 && greenStreak < 2
+    const lastUsedAt = Number(template.lastUsedAt) || 0
+    const archived = lastUsedAt > 0 && now - lastUsedAt > DECAY_DAYS * 86400000
+    const reuse = promotedAt
+      ? runs.filter(run => run.templateId === template.id && Number(run.createdAt) > promotedAt).length
+      : 0
+    const total = greens + reds
+    return {
+      id: template.id,
+      title: template.title,
+      green: greens,
+      yellow: records.filter(item => item.colour === 'yellow').length,
+      red: reds,
+      greenRate: total ? Math.round((greens / total) * 100) / 100 : 0,
+      promoted,
+      demoted,
+      archived,
+      promotedAt: promotedAt ? new Date(promotedAt).toISOString() : '',
+      reuseAfterPromotion: reuse,
+      useCount: Number(template.uses) || 0,
+      lastUsedAt: lastUsedAt ? new Date(lastUsedAt).toISOString() : '',
+      // Cost is per GREEN card, not per card: dividing by all runs would hide
+      // exactly the failures that make a card expensive.
+      costPerGreen: tokens && greens ? {
+        input: Math.round(tokens.input / greens),
+        output: Math.round(tokens.output / greens),
+        cacheRead: Math.round(tokens.cacheRead / greens),
+        cacheWrite: Math.round(tokens.cacheWrite / greens),
+      } : null,
+      costKnown: Boolean(tokens && greens),
+    }
+  })
+  const candidates = cards
+    .filter(card => card.promoted && !card.archived)
+    .sort((left, right) => (right.greenRate - left.greenRate) || (String(right.lastUsedAt).localeCompare(String(left.lastUsedAt))))
+    .slice(0, 3)
+    .map(card => ({
+      id: card.id,
+      title: card.title,
+      green: card.green,
+      red: card.red,
+      greenRate: card.greenRate,
+      costPerGreen: card.costPerGreen,
+      reuseAfterPromotion: card.reuseAfterPromotion,
+      because: card.green + ' 绿 / ' + card.red + ' 红 · 绿率 ' + Math.round(card.greenRate * 100) + '%',
+    }))
+  return {
+    ok: true,
+    cards,
+    candidates,
+    rules: {
+      promote: 'green ≥ 2 且最近没有红',
+      demote: '红一次即降级，需要再攒 2 个绿才复出',
+      decay: '超过 ' + DECAY_DAYS + ' 天没用 → 归档（不删）',
+      cost: '每绿卡成本 = token 合计 / 绿卡数；没有 token 数据时未知',
+    },
+    totals: {
+      templates: templates.length,
+      recorded: readOutcomes().items.length,
+      promoted: cards.filter(card => card.promoted).length,
+      demoted: cards.filter(card => card.demoted).length,
+      archived: cards.filter(card => card.archived).length,
+    },
+    fetchedAt: new Date().toISOString(),
+  }
+}
+
 // ---- v1.0: the node graph ---------------------------------------------------
 //
 // A node is a quintuple — kind, typed inputs, typed outputs, executor, verifier.
@@ -1917,6 +2069,10 @@ export async function apply(ctx) {
         sendJson(res, 400, { ok: false, error: 'outcome 只能是 green / yellow / red' })
         return
       }
+      if (outcome === 'red' && !decision) {
+        sendJson(res, 400, { ok: false, error: '红必须写原因：收工时 decision 就是原因' })
+        return
+      }
       const project = activeProject()
       if (!project.ok) { sendJson(res, 503, { ok: false, error: project.error || '项目不可用' }); return }
       const stamp = new Date().toISOString()
@@ -1927,6 +2083,28 @@ export async function apply(ctx) {
       if (runId) memory.basis = { ...memory.basis, runId }
       if (decision) appendDecision(memory, { text: decision, title: title || '' })
       const saved = saveMemory(memory, { updatedAt: stamp })
+      // The close-out colour is the same fact the flywheel ranks on, so it is
+      // written to both stores in the same call instead of asking twice.
+      let outcomeRecord = null
+      if (runId && outcome) {
+        const runs = readRuns()
+        const run = runs.find(item => item.runId === runId)
+        if (run) {
+          outcomeRecord = recordOutcome({
+            runId,
+            templateId: run.templateId || '',
+            templateTitle: run.templateTitle || '',
+            colour: outcome,
+            reason: decision || '',
+            tokens: input.tokens,
+          })
+          run.outcome = outcome
+          run.outcomeAt = outcomeRecord.at
+          run.updatedAt = Date.now()
+          writeRuns(runs)
+          appendAudit({ action: 'outcome.record', requestId: requestId(input.requestId), summary: outcome + (run.templateTitle ? ' · ' + run.templateTitle : '') + ' · close' })
+        }
+      }
       appendAudit({
         action: 'memory.close',
         requestId: requestId(input.requestId),
@@ -1941,6 +2119,7 @@ export async function apply(ctx) {
         project: { key: project.key, root: project.root, name: saved.memory.name },
         agents: saved.agents,
         gap: memoryGap(saved.memory),
+        outcomeRecord,
       })
     },
   }))
@@ -2124,6 +2303,67 @@ export async function apply(ctx) {
       const result = verifyFlow(flow)
       appendAudit({ action: 'flow.verify', requestId: requestId(body.json.requestId), summary: result.results.map(item => item.nodeId + ':' + item.status).join(' ') })
       sendJson(res, 200, { ok: true, results: result.results, flow: flowPayload(readFlow()) })
+    },
+  }))
+
+// ---- v1.0 flywheel routes --------------------------------------------------
+  disposers.push(ctx.webServer.register({
+    kind: 'exact',
+    path: FLYWHEEL_API_PATH,
+    handler: async (req, res) => {
+      if (!guard(req, res, 'GET')) return
+      sendJson(res, 200, templateOutcomeCards())
+    },
+  }))
+
+  // Recording a colour is one small write. Red must say why, because a red with
+  // no reason teaches the flywheel nothing.
+  disposers.push(ctx.webServer.register({
+    kind: 'exact',
+    path: OUTCOME_API_PATH,
+    handler: async (req, res) => {
+      if (!guard(req, res, 'POST')) return
+      const body = await readJsonBody(req)
+      if (body.tooLarge) { sendJson(res, 413, { ok: false, error: '请求体过大' }); return }
+      if (body.error) { sendJson(res, 400, { ok: false, error: '请求体不是合法 JSON 对象' }); return }
+      const input = body.json
+      const runId = normaliseText(input.runId, 80)
+      const colour = normaliseText(input.colour, 20)
+      const reason = normaliseText(input.reason, 500)
+      if (runId === INVALID || colour === INVALID || reason === INVALID) {
+        sendJson(res, 400, { ok: false, error: '字段类型或长度不合法' })
+        return
+      }
+      if (!runId) { sendJson(res, 400, { ok: false, error: '记录结论需要 runId' }); return }
+      if (!OUTCOME_COLOURS.includes(colour)) {
+        sendJson(res, 400, { ok: false, error: 'colour 只能是 green / yellow / red' })
+        return
+      }
+      if (colour === 'red' && !reason) {
+        sendJson(res, 400, { ok: false, error: '红必须写原因：没有原因的失败教不会飞轮' })
+        return
+      }
+      const runs = readRuns()
+      const run = runs.find(item => item.runId === runId)
+      if (!run) { sendJson(res, 404, { ok: false, error: '没有这个运行记录' }); return }
+      const record = recordOutcome({
+        runId,
+        templateId: run.templateId || '',
+        templateTitle: run.templateTitle || '',
+        colour,
+        reason: reason || '',
+        tokens: input.tokens,
+      })
+      run.outcome = colour
+      run.outcomeAt = record.at
+      run.updatedAt = Date.now()
+      writeRuns(runs)
+      appendAudit({
+        action: 'outcome.record',
+        requestId: requestId(input.requestId),
+        summary: colour + (run.templateTitle ? ' · ' + run.templateTitle : '') + (reason ? ' · ' + reason.slice(0, 60) : ''),
+      })
+      sendJson(res, 200, { ok: true, outcome: record, flywheel: templateOutcomeCards() })
     },
   }))
 

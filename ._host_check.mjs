@@ -1216,6 +1216,128 @@ for (const action of ['flow.node', 'flow.node.update', 'flow.edge', 'flow.run', 
 }
 console.log('graph: typed ports + refused edges (type/port/self/node/cycle) | a two-node text flow writes real artifacts | verifier red on a missing word, red after the artifact is deleted | unregistered executor stays gray and writes nothing')
 
+// --- v1.0 flywheel: three colours, promotion/demotion, cost, ranking --------
+const flyRoute = registered.find(r => r.regType === 'web' && r.path === '/dsh-workbench/api/flywheel')
+const outcomeRoute = registered.find(r => r.regType === 'web' && r.path === '/dsh-workbench/api/outcome')
+if (!flyRoute || !outcomeRoute) fail('flywheel routes missing')
+
+const flyTplRes = response()
+await templatesRoute.handler(postReq(templatesRoute.path, {
+  title: '飞轮候选', goal: '写一段周报摘要', plan: '', instruction: '',
+  model: 'deepseek-official/deepseek-flash', sessionMode: 'new',
+}), flyTplRes)
+if (flyTplRes.statusCode !== 200) fail('flywheel template save ' + flyTplRes.body)
+const flyTplId = JSON.parse(flyTplRes.body).template.id
+
+const dispatchForFly = async label => {
+  const res = response()
+  await dispatchRoute.handler(postReq(dispatchRoute.path, { goal: label, templateId: flyTplId, model: 'deepseek-official/deepseek-flash' }), res)
+  if (res.statusCode !== 200) fail('flywheel dispatch failed ' + res.body)
+  return JSON.parse(res.body).run.runId
+}
+const recordColour = async (runId, colour, extra = {}) => {
+  const res = response()
+  await outcomeRoute.handler(postReq(outcomeRoute.path, { runId, colour, ...extra }), res)
+  return res
+}
+const readFly = async () => {
+  const res = response()
+  await flyRoute.handler(getReq(flyRoute.path), res)
+  if (res.statusCode !== 200) fail('flywheel read ' + res.statusCode + ' ' + res.body)
+  return JSON.parse(res.body)
+}
+
+const r1 = await dispatchForFly('第一次绿')
+const r2 = await dispatchForFly('第二次绿')
+const greenA = await recordColour(r1, 'green', { tokens: { input: 1000, output: 200, cacheRead: 400, cacheWrite: 100 } })
+if (greenA.statusCode !== 200) fail('green outcome rejected: ' + greenA.body)
+if ((await recordColour(r2, 'green', { tokens: { input: 500, output: 100 } })).statusCode !== 200) fail('second green rejected')
+
+let fly = await readFly()
+let card = fly.cards.find(item => item.id === flyTplId)
+if (!card) fail('template has no flywheel card')
+if (card.promoted !== true || card.demoted !== false) fail('two greens and no red must promote: ' + JSON.stringify(card))
+if (fly.candidates[0]?.id !== flyTplId) fail('the promoted card is not the first candidate: ' + JSON.stringify(fly.candidates))
+if (!card.costKnown || card.costPerGreen.input !== 750 || card.costPerGreen.output !== 150 || card.costPerGreen.cacheRead !== 200 || card.costPerGreen.cacheWrite !== 50) {
+  fail('per-green cost is wrong: ' + JSON.stringify(card.costPerGreen))
+}
+
+const redNoReason = await recordColour(r2, 'red')
+if (redNoReason.statusCode !== 400) fail('a red without a reason was accepted')
+const unknownRun = await recordColour('run_does_not_exist', 'green')
+if (unknownRun.statusCode !== 404) fail('outcome accepted an unknown run')
+const badColour = await recordColour(r2, 'blue', { reason: 'x' })
+if (badColour.statusCode !== 400) fail('outcome accepted a colour outside green/yellow/red')
+
+const r3 = await dispatchForFly('一次红')
+const redOk = await recordColour(r3, 'red', { reason: '产物没落盘' })
+if (redOk.statusCode !== 200) fail('red with a reason rejected: ' + redOk.body)
+fly = await readFly()
+card = fly.cards.find(item => item.id === flyTplId)
+if (card.demoted !== true || card.promoted !== false) fail('one red must demote: ' + JSON.stringify(card))
+if (fly.candidates.some(item => item.id === flyTplId)) fail('a demoted card is still recommended')
+
+// promotion is earned back with two fresh greens, and then it must be reused
+const r4 = await dispatchForFly('红后第一绿')
+const r5 = await dispatchForFly('红后第二绿')
+if ((await recordColour(r4, 'green')).statusCode !== 200) fail('recovery green 1 rejected')
+if ((await recordColour(r5, 'green')).statusCode !== 200) fail('recovery green 2 rejected')
+const r6 = await dispatchForFly('晋升后复用 1')
+await dispatchForFly('晋升后复用 2')
+fly = await readFly()
+card = fly.cards.find(item => item.id === flyTplId)
+if (card.promoted !== true) fail('two greens after a red must re-promote: ' + JSON.stringify(card))
+if (card.reuseAfterPromotion < 2) fail('the exit condition (reused ≥2 after promotion) not met: ' + JSON.stringify(card))
+if (!card.promotedAt) fail('promotion timestamp missing')
+if (fly.candidates[0]?.reuseAfterPromotion < 2) fail('the recommended candidate does not show its reuse')
+
+// one colour per run: re-recording replaces, it does not double count
+const beforeDedupe = (await readFly()).totals.recorded
+const againRes = await recordColour(r5, 'green')
+if (againRes.statusCode !== 200) fail('re-recording a colour failed')
+const afterDedupe = (await readFly()).totals.recorded
+if (afterDedupe !== beforeDedupe) fail('recording the same run twice double counted: ' + beforeDedupe + ' → ' + afterDedupe)
+
+// the close-out route is a second door into the same record
+const closeRedNoReason = response()
+await closeRoute.handler(postReq(closeRoute.path, { next: '继续', outcome: 'red' }), closeRedNoReason)
+if (closeRedNoReason.statusCode !== 400) fail('close accepted a red without a reason')
+const rClose = await dispatchForFly('收工时判绿')
+const closeWithRun = response()
+await closeRoute.handler(postReq(closeRoute.path, {
+  next: '按推荐继续', outcome: 'green', title: '收工即记账', decision: '决定：收工三色直接进飞轮。', runId: rClose,
+}), closeWithRun)
+if (closeWithRun.statusCode !== 200) fail('close with a run failed: ' + closeWithRun.body)
+const closePayload = JSON.parse(closeWithRun.body)
+if (!closePayload.outcomeRecord || closePayload.outcomeRecord.colour !== 'green') fail('close did not record the colour: ' + closeWithRun.body)
+const closedRun = JSON.parse(readFileSync(join(tempWorkspace, 'runs.json'), 'utf8')).items.find(item => item.runId === rClose)
+if (closedRun?.outcome !== 'green') fail('close did not stamp the run outcome')
+const flyAfterClose = await readFly()
+const closeCard = flyAfterClose.cards.find(item => item.id === flyTplId)
+if (closeCard.green < 4) fail('close-time green did not reach the flywheel: ' + JSON.stringify(closeCard))
+
+// decay: an unused card is archived, never deleted
+const templatesPath = join(tempWorkspace, 'templates.json')
+const templatesOnDisk = JSON.parse(readFileSync(templatesPath, 'utf8'))
+const flyTpl = templatesOnDisk.items.find(item => item.id === flyTplId)
+flyTpl.lastUsedAt = Date.now() - 40 * 86400000
+writeFileSync(templatesPath, JSON.stringify(templatesOnDisk, null, 2), 'utf8')
+const decayed = await readFly()
+const decayedCard = decayed.cards.find(item => item.id === flyTplId)
+if (decayedCard.archived !== true) fail('a card unused for 40 days must be archived: ' + JSON.stringify(decayedCard))
+if (decayed.candidates.some(item => item.id === flyTplId)) fail('an archived card is still recommended')
+flyTpl.lastUsedAt = Date.now()
+writeFileSync(templatesPath, JSON.stringify(templatesOnDisk, null, 2), 'utf8')
+if (JSON.parse(readFileSync(templatesPath, 'utf8')).items.length !== templatesOnDisk.items.length) fail('decay test lost a template')
+
+const flyMethodRes = response()
+await flyRoute.handler({ ...getReq(flyRoute.path), method: 'POST' }, flyMethodRes)
+if (flyMethodRes.statusCode !== 405) fail('flywheel route accepted POST')
+const flyAuditRes = response()
+await auditRoute.handler(getReq(auditRoute.path + '?limit=40'), flyAuditRes)
+if (!JSON.parse(flyAuditRes.body).entries.some(entry => entry.action === 'outcome.record')) fail('audit missing outcome.record')
+console.log('flywheel: 2 green promote, 1 red demotes, 2 fresh greens re-promote | per-green cost from tokens | one colour per run | close-time colour reaches the flywheel | 40 days idle archives | a promoted template is reused', card.reuseAfterPromotion, 'times')
+
 rmSync(tempRoot, { recursive: true, force: true })
 delete process.env.DSH_WORKBENCH_DIR
 console.log('\nHOST HARNESS PASS')

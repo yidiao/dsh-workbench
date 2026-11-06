@@ -44,7 +44,11 @@ window.__ModuleLoader__.load({
       flowGray: 'no executor', flowGreen: 'verified', flowRed: 'failed', flowIdle: 'not run yet',
       flowNoExecutor: 'unregistered executor', flowBroken: 'Graph refused:',
       flowRun: 'Run graph', flowVerify: 'Re-check artifacts', flowBusy: 'Running…',
-      flowRan: 'Ran. Verified:', flowRanVerify: 'Re-checked. Verified:', moreCanvas: 'Canvas', moreHistory: 'Past runs', moreAudit: 'Audit trail',
+      flowRan: 'Ran. Verified:', flowRanVerify: 'Re-checked. Verified:',
+      flyTitle: 'Continue from here', flyReward: 'promoted',
+      flyNone: 'Nothing is recommended yet — a card is recommended after 2 verified outcomes and no failure.',
+      flyCost: 'cost per green', flyCostUnknown: 'cost unknown', flyResume: 'Continue',
+      flyFilled: 'Template loaded into the form.', flyMissing: 'That template is gone — nothing was filled.', moreCanvas: 'Canvas', moreHistory: 'Past runs', moreAudit: 'Audit trail',
       memoryDecisions: 'Recent decisions', running: 'running',
     }
     const FLOW_ZH = {
@@ -73,7 +77,11 @@ window.__ModuleLoader__.load({
       flowGray: '没有 executor', flowGreen: '已验证', flowRed: '失败', flowIdle: '还没跑',
       flowNoExecutor: '未注册的 executor', flowBroken: '画布被拒：',
       flowRun: '跑一遍画布', flowVerify: '重验产物', flowBusy: '正在跑…',
-      flowRan: '跑完。已验证：', flowRanVerify: '重验完。已验证：', moreCanvas: '画布', moreHistory: '历史运行', moreAudit: '审计时间线',
+      flowRan: '跑完。已验证：', flowRanVerify: '重验完。已验证：',
+      flyTitle: '从这里继续', flyReward: '已晋升',
+      flyNone: '还没有可推荐的——攒到 2 次验证过、且没有红，才会进推荐。',
+      flyCost: '每绿卡成本', flyCostUnknown: '成本未知', flyResume: '继续这条',
+      flyFilled: '模板已填进表单。', flyMissing: '那个模板已经没了，什么都没填。', moreCanvas: '画布', moreHistory: '历史运行', moreAudit: '审计时间线',
       memoryDecisions: '最近判断', running: '运行中',
     }
     const en = {
@@ -227,6 +235,10 @@ window.__ModuleLoader__.load({
       .wb-channel{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:8px}
       .wb-chip[data-channel="sync"]{border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-brand-primary)}
       .wb-details{margin-bottom:12px}
+      .wb-fly-list{display:grid;gap:6px}
+      .wb-fly-item{display:flex;align-items:center;gap:8px;border:1px solid var(--dsw-alias-border-l1);border-radius:10px;padding:7px 9px}
+      .wb-fly-main{flex:1;min-width:0}
+      .wb-fly-name{font-size:12px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
       .wb-flow-nodes{display:grid;gap:8px}
       .wb-flow-node{border:1px solid var(--dsw-alias-border-l1);border-radius:10px;padding:8px 10px;background:var(--dsw-alias-bg-base)}
       .wb-flow-node[data-status="green"]{border-color:color-mix(in srgb,var(--dsw-alias-state-success-primary) 55%,var(--dsw-alias-border-l1))}
@@ -496,6 +508,8 @@ const [momentOverride, setMomentOverride] = React.useState('')
       const [closeBusy, setCloseBusy] = React.useState(false)
       const [closeNotice, setCloseNotice] = React.useState('')
       const [flow, setFlow] = React.useState(null)
+      const [flywheel, setFlywheel] = React.useState(null)
+      const [flyNotice, setFlyNotice] = React.useState('')
       const [flowBusy, setFlowBusy] = React.useState(false)
       const [flowNotice, setFlowNotice] = React.useState('')
       const prefilled = React.useRef(false)
@@ -582,6 +596,13 @@ const [momentOverride, setMomentOverride] = React.useState('')
               if (payload && payload.ok === true) setFlow(payload)
             }
           } catch { /* keep the previous graph */ }
+          try {
+            const flyResponse = await fetch('/dsh-workbench/api/flywheel', { cache: 'no-store', credentials: 'same-origin' })
+            if (flyResponse.ok) {
+              const payload = await flyResponse.json()
+              if (payload && payload.ok === true) setFlywheel(payload)
+            }
+          } catch { /* keep the previous ranking */ }
         } catch { setError(true) } finally { setBusy(false) }
       }, [applyRuns])
       React.useEffect(() => { load() }, [load])
@@ -691,6 +712,16 @@ const boundSessionId = String(sessionId || '').trim()
           setMomentNotice(t('memoryActivateDone'))
           await load()
         } catch (failure) { setMomentNotice(String(failure?.message || failure)) }
+      }
+
+      // One click from a recommendation to the filled form: the flywheel is
+      // only worth anything if resuming is cheaper than retyping.
+      function resumeCandidate(id) {
+        setFlyNotice('')
+        const template = templates.find(item => item.id === id)
+        if (!template) { setFlyNotice(t('flyMissing')); return }
+        applyTemplate(id)
+        setFlyNotice(t('flyFilled'))
       }
 
       async function runFlowNow() {
@@ -1417,6 +1448,27 @@ const momentButton = (id, label) => h('button', {
             disabled: flowBusy || !flow || !flow.validation || flow.validation.ok !== true,
           }, flowBusy ? t('flowBusy') : t('flowRun'))))
 
+      const flyCard = h('section', { className: 'wb-card wb-fly' },
+        h('div', { className: 'wb-card-head' },
+          h('h2', { style: { margin: 0 } }, t('flyTitle')),
+          flywheel?.totals
+            ? h('span', { className: 'wb-note' }, String(flywheel.totals.promoted) + '/' + String(flywheel.totals.templates) + ' ' + t('flyReward'))
+            : null),
+        Array.isArray(flywheel?.candidates) && flywheel.candidates.length
+          ? h('div', { className: 'wb-fly-list' }, flywheel.candidates.map(candidate => h('div', { key: candidate.id, className: 'wb-fly-item' },
+            h('div', { className: 'wb-fly-main' },
+              h('div', { className: 'wb-fly-name' }, String(candidate.title || candidate.id)),
+              h('div', { className: 'wb-note' }, String(candidate.because || '')),
+              h('div', { className: 'wb-note' }, candidate.costPerGreen
+                ? t('flyCost') + ' ' + String(candidate.costPerGreen.input) + ' in / ' + String(candidate.costPerGreen.output) + ' out'
+                : t('flyCostUnknown'))),
+            h('button', {
+              className: 'wb-mini', type: 'button',
+              onClick: () => resumeCandidate(candidate.id),
+            }, t('flyResume')))))
+          : h('div', { className: 'wb-note' }, t('flyNone')),
+        flyNotice ? h('div', { className: 'wb-note' }, flyNotice) : null)
+
       const memoryCard = h('section', { className: 'wb-card wb-memory' },
         h('div', { className: 'wb-card-head' },
           h('h2', { style: { margin: 0 } }, t('memoryTitle')),
@@ -1518,6 +1570,7 @@ const momentButton = (id, label) => h('button', {
 
       const attachBody = h('div', null,
         memoryCard,
+        flyCard,
         syncBox,
         channel?.channel === 'async'
           ? h('div', null, taskView)
