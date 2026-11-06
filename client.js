@@ -64,6 +64,14 @@ window.__ModuleLoader__.load({
       action_dispatch_start: 'dispatch', action_dispatch_done: 'done', action_dispatch_failed: 'failed',
       action_dispatch_error: 'error', action_dispatch_cancel: 'cancelled', action_state_edit: 'state',
       action_decision_append: 'decision', action_module_save: 'module+', action_module_remove: 'module−',
+      action_template_save: 'template+', action_template_remove: 'template−', action_dispatch_archive: 'archived',
+      templateLabel: 'Template', noTemplate: 'No template — fill the slots',
+      templateTitle: 'Template name', saveTemplate: 'Save as template', deleteTemplate: 'Delete',
+      templateSaved: 'Template saved.', templateRemoved: 'Template deleted.',
+      templateFailed: 'Could not save the template.', templateNeedsGoal: 'A template needs a goal.',
+      templateHint: 'Picking a template fills every slot; saving one records this combination for next time.',
+      templateEmpty: 'No templates yet — assemble the slots once, then save them here.',
+      templateUses: 'used {n}×', templateRuns: 'template dispatches',
       updated: 'Updated', noData: '—',
     }
     const zh = {
@@ -115,6 +123,14 @@ window.__ModuleLoader__.load({
       action_dispatch_start: '派发', action_dispatch_done: '完成', action_dispatch_failed: '失败',
       action_dispatch_error: '出错', action_dispatch_cancel: '取消', action_state_edit: '改状态',
       action_decision_append: '记决策', action_module_save: '存模块', action_module_remove: '删模块',
+      action_template_save: '存模板', action_template_remove: '删模板', action_dispatch_archive: '归档运行',
+      templateLabel: '模板', noTemplate: '不用模板，自己填槽位',
+      templateTitle: '模板名字', saveTemplate: '存为模板', deleteTemplate: '删除',
+      templateSaved: '模板已保存。', templateRemoved: '模板已删除。',
+      templateFailed: '模板保存失败。', templateNeedsGoal: '模板至少要有目标。',
+      templateHint: '选一个模板会把三个槽位一次填好；把当前组合存下来，下次就不用重拼。',
+      templateEmpty: '还没有模板：先把槽位拼一次，再存成模板。',
+      templateUses: '用了 {n} 次', templateRuns: '模板派发',
       updated: '更新于', noData: '—',
     }
 
@@ -157,6 +173,9 @@ window.__ModuleLoader__.load({
       .wb-run-dot[data-status="error"]{background:var(--dsw-alias-state-error-primary)}
       .wb-run-row-goal{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
       .wb-run-row-meta{flex:0 0 auto;color:var(--dsw-alias-label-secondary);font-size:10px}
+      .wb-run-row-tpl{flex:0 0 auto;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;border:1px solid color-mix(in srgb,var(--dsw-alias-brand-primary) 40%,var(--dsw-alias-border-l1));border-radius:999px;padding:1px 7px;color:var(--dsw-alias-brand-primary);font-size:10px;font-weight:650}
+      .wb-template select{min-width:150px;max-width:260px;min-height:30px;border:1px solid var(--dsw-alias-border-l1);border-radius:8px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);padding:5px 8px;font:inherit;font-size:12px}
+      .wb-template input{box-sizing:border-box;flex:1 1 140px;min-width:0;min-height:30px;border:1px solid var(--dsw-alias-border-l1);border-radius:8px;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);padding:6px 9px;font:inherit;font-size:12px;outline:none}
       .wb-slot{display:grid;gap:6px;margin-bottom:11px}
       .wb-slot-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
       .wb-slot-head label{font-size:11px;font-weight:700;color:var(--dsw-alias-label-secondary)}
@@ -332,6 +351,11 @@ window.__ModuleLoader__.load({
       const [runs, setRuns] = React.useState([])
       const [sessions, setSessions] = React.useState([])
       const [modules, setModules] = React.useState([])
+      const [templates, setTemplates] = React.useState([])
+      const [templateId, setTemplateId] = React.useState('')
+      const [templateTitle, setTemplateTitle] = React.useState('')
+      const [templateNotice, setTemplateNotice] = React.useState('')
+      const [templateBusy, setTemplateBusy] = React.useState(false)
       const [selectedRunId, setSelectedRunId] = React.useState('')
       const [report, setReport] = React.useState(null)
       const [audit, setAudit] = React.useState([])
@@ -354,13 +378,14 @@ window.__ModuleLoader__.load({
         setBusy(true); setError(false)
         try {
           // Every request is a read-only GET against this plugin's own Host routes.
-          const [response, modelsResponse, auditResponse, runsResponse, sessionsResponse, modulesResponse] = await Promise.all([
+          const [response, modelsResponse, auditResponse, runsResponse, sessionsResponse, modulesResponse, templatesResponse] = await Promise.all([
             fetch('/dsh-workbench/api/state-v2', { cache: 'no-store', credentials: 'same-origin' }),
             fetch('/dsh-workbench/api/models', { cache: 'no-store', credentials: 'same-origin' }).catch(() => null),
             fetch('/dsh-workbench/api/audit?limit=40', { cache: 'no-store', credentials: 'same-origin' }).catch(() => null),
             fetch('/dsh-workbench/api/runs', { cache: 'no-store', credentials: 'same-origin' }).catch(() => null),
             fetch('/dsh-workbench/api/sessions', { cache: 'no-store', credentials: 'same-origin' }).catch(() => null),
             fetch('/dsh-workbench/api/modules', { cache: 'no-store', credentials: 'same-origin' }).catch(() => null),
+            fetch('/dsh-workbench/api/templates', { cache: 'no-store', credentials: 'same-origin' }).catch(() => null),
           ])
           if (!response.ok) throw new Error('HTTP ' + response.status)
           const next = await response.json()
@@ -394,6 +419,12 @@ window.__ModuleLoader__.load({
               const payload = await modulesResponse.json()
               if (payload && Array.isArray(payload.items)) setModules(payload.items)
             } catch { /* keep previous modules */ }
+          }
+          if (templatesResponse && templatesResponse.ok) {
+            try {
+              const payload = await templatesResponse.json()
+              if (payload && Array.isArray(payload.items)) setTemplates(payload.items)
+            } catch { /* keep previous templates */ }
           }
           if (runsResponse && runsResponse.ok) {
             try {
@@ -460,7 +491,7 @@ window.__ModuleLoader__.load({
         event?.preventDefault?.()
         const local = { goal: goal.trim(), plan: plan.trim(), instruction: instruction.trim(), model, sessionId: sessionTarget }
         setPreview(local); setDispatchError('')
-        postJson('/dsh-workbench/api/dispatch', { ...local, moduleIds: usedModuleIds, dryRun: true })
+        postJson('/dsh-workbench/api/dispatch', { ...local, moduleIds: usedModuleIds, templateId: templateId || '', dryRun: true })
           .then(payload => setDryRun(payload))
           .catch(failure => setDryRun({ ok: false, available: false, error: String(failure?.message || t('dispatchFailed')) }))
       }
@@ -476,6 +507,7 @@ window.__ModuleLoader__.load({
           const payload = await postJson('/dsh-workbench/api/dispatch', {
             goal: goal.trim(), plan: plan.trim(), instruction: instruction.trim(), model,
             sessionId: sessionTarget, moduleIds: usedModuleIds,
+            ...(templateId ? { templateId } : {}),
           })
           if (payload.warning) setDispatchError(payload.warning)
           if (payload.run) {
@@ -598,6 +630,58 @@ window.__ModuleLoader__.load({
         setTab('task')
       }
 
+      // ---- templates: a saved recipe fills every slot in one action ----------
+      function applyTemplate(id) {
+        setTemplateId(id)
+        setTemplateNotice('')
+        if (!id) return
+        const template = templates.find(item => item.id === id)
+        if (!template) return
+        setGoal(String(template.goal || ''))
+        setPlan(String(template.plan || ''))
+        setInstruction(String(template.instruction || ''))
+        setUsedModuleIds(Array.isArray(template.moduleIds) ? template.moduleIds.slice(0, 20) : [])
+        if (template.model) setModel(String(template.model))
+        setSessionTarget('')
+        setPreview(null); setDryRun(null)
+        setTemplateTitle(String(template.title || ''))
+      }
+      async function saveTemplate() {
+        const goalText = goal.trim()
+        if (!goalText) { setTemplateNotice(t('templateNeedsGoal')); return }
+        const title = templateTitle.trim() || goalText.split('\n')[0].slice(0, 40)
+        setTemplateBusy(true); setTemplateNotice('')
+        try {
+          const payload = await postJson('/dsh-workbench/api/templates', {
+            ...(templateId ? { id: templateId } : {}),
+            title,
+            goal: goalText,
+            plan,
+            instruction,
+            moduleIds: usedModuleIds,
+            model,
+            sessionMode: sessionTarget ? 'existing' : 'new',
+          })
+          if (Array.isArray(payload.items)) setTemplates(payload.items)
+          if (payload.template?.id) setTemplateId(payload.template.id)
+          setTemplateTitle(payload.template?.title || title)
+          setTemplateNotice(t('templateSaved'))
+        } catch (failure) {
+          setTemplateNotice(String(failure?.message || t('templateFailed')))
+        } finally { setTemplateBusy(false) }
+      }
+      async function removeTemplate() {
+        if (!templateId) return
+        setTemplateBusy(true); setTemplateNotice('')
+        try {
+          const payload = await postJson('/dsh-workbench/api/templates', { id: templateId, remove: true })
+          if (Array.isArray(payload.items)) setTemplates(payload.items)
+          setTemplateId(''); setTemplateTitle(''); setTemplateNotice(t('templateRemoved'))
+        } catch (failure) {
+          setTemplateNotice(String(failure?.message || t('templateFailed')))
+        } finally { setTemplateBusy(false) }
+      }
+
       const state = data?.state || {}
       const next = asList(state.next)
       const redlines = asList(state.red_lines || state.redLines)
@@ -638,6 +722,7 @@ window.__ModuleLoader__.load({
 
       // ---- run tab -----------------------------------------------------------
       const runMeta = run => [
+        run.templateTitle && h('span', { key: 'template' }, t('templateLabel') + ' ', h('b', null, run.templateTitle)),
         h('span', { key: 'session' }, t('session') + ' ', h('b', null, run.sessionId || '—')),
         h('span', { key: 'model' }, t('model') + ' ', h('b', null, run.model || '—')),
         h('span', { key: 'started' }, t('started') + ' ', h('b', null, formatClock(run.createdAt))),
@@ -703,6 +788,28 @@ window.__ModuleLoader__.load({
             (item.title || item.sessionId.slice(0, 16)) + (item.running ? ' · ' + t('running') : '')))),
         h('span', { className: 'wb-note' }, t('sessionHint')))
 
+      // A template is the difference between "pieces exist" and "reuse is cheaper
+      // than retyping": one choice fills every slot below.
+      const templateField = h('div', { className: 'wb-field wb-template' },
+        h('label', { htmlFor: 'wb-template' }, t('templateLabel')),
+        h('div', { className: 'wb-actions' },
+          h('select', {
+            id: 'wb-template', value: templateId,
+            onChange: event => applyTemplate(event.target.value),
+          },
+            h('option', { value: '' }, t('noTemplate')),
+            templates.map(item => h('option', { key: item.id, value: item.id },
+              item.title + (Number(item.uses) ? ' · ' + String(t('templateUses')).replace('{n}', String(item.uses)) : '')))),
+          h('input', {
+            id: 'wb-template-title', value: templateTitle, placeholder: t('templateTitle'),
+            onChange: event => setTemplateTitle(event.target.value),
+            style: { flex: '1 1 140px', minWidth: 0 },
+          }),
+          h('button', { className: 'wb-button', type: 'button', onClick: saveTemplate, disabled: templateBusy || !goal.trim() }, t('saveTemplate')),
+          templateId && h('button', { className: 'wb-mini', type: 'button', onClick: removeTemplate, disabled: templateBusy }, t('deleteTemplate'))),
+        h('span', { className: 'wb-note' }, templates.length ? t('templateHint') : t('templateEmpty')),
+        templateNotice && h('div', { className: 'wb-note' }, templateNotice))
+
       const modulePickerFor = kind => {
         if (modulePicker !== kind) return null
         const items = modules.filter(item => item && item.kind === kind)
@@ -761,6 +868,7 @@ window.__ModuleLoader__.load({
 
       const taskForm = h('form', { onSubmit: makePreview },
         h('p', { className: 'wb-hint' }, t('composeHint')),
+        templateField,
         h('div', { style: { display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fit,minmax(240px,1fr))' } },
           sessionField, modelField),
         slot('goal', t('goal'), h('input', {
@@ -799,6 +907,7 @@ window.__ModuleLoader__.load({
           },
             h('span', { className: 'wb-run-dot', 'data-status': item.status, 'aria-hidden': true }),
             h('span', { className: 'wb-run-row-goal' }, item.goal || t('notSet')),
+            item.templateTitle && h('span', { className: 'wb-run-row-tpl' }, item.templateTitle),
             h('span', { className: 'wb-run-row-meta' }, statusLabel(item.status) + ' · ' + formatClock(item.createdAt))))))
         : h('div', { className: 'wb-empty' }, t('runEmpty'))
 
@@ -912,6 +1021,7 @@ window.__ModuleLoader__.load({
       const doneRuns = runs.filter(item => item && item.status === 'done')
       const durations = doneRuns.map(item => (Number(item.updatedAt) || 0) - (Number(item.createdAt) || 0)).filter(ms => ms > 0)
       const stepsList = runs.map(item => Number(item.steps)).filter(value => Number.isFinite(value) && value > 0)
+      const templateRunCount = runs.filter(item => item && item.templateId).length
       const average = list => (list.length ? Math.round(list.reduce((sum, value) => sum + value, 0) / list.length) : 0)
       const metricsView = h('section', { className: 'wb-card wb-metrics-card' },
         h('h2', null, t('metrics')),
@@ -920,7 +1030,8 @@ window.__ModuleLoader__.load({
             h('span', null, h('b', null, String(runs.length)), ' ' + t('dispatches')),
             h('span', null, h('b', null, Math.round((doneRuns.length / runs.length) * 100) + '%'), ' ' + t('successRate')),
             h('span', null, h('b', null, durations.length ? formatDuration(average(durations)) : '—'), ' ' + t('avgDuration')),
-            h('span', null, h('b', null, stepsList.length ? String(average(stepsList)) : '—'), ' ' + t('avgSteps')))
+            h('span', null, h('b', null, stepsList.length ? String(average(stepsList)) : '—'), ' ' + t('avgSteps')),
+            templateRunCount > 0 && h('span', null, h('b', null, String(templateRunCount) + ' / ' + String(runs.length)), ' ' + t('templateRuns')))
           : h('div', { className: 'wb-note' }, t('sampleTooSmall')))
 
       const tasksView = h('section', { className: 'wb-card wb-tasks-card' },

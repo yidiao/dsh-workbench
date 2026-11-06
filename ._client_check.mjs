@@ -60,6 +60,7 @@ const payloads = {
       {
         runId: 'run_B', sessionId: 'session-bbb', goal: '上一条已完成的任务',
         model: 'deepseek-flash', status: 'done', cwd: 'D:/AI Pj', plan: '步骤B', instruction: '注意B',
+        templateId: 'tpl_1', templateTitle: '行数巡检模板',
         createdAt: 1793944000000, updatedAt: 1793944100000, reply: '上一次运行的回复正文',
       },
     ],
@@ -88,6 +89,14 @@ const payloads = {
   '/dsh-workbench/api/modules': {
     ok: true,
     items: [{ id: 'mod_1', kind: 'goal', title: '统计行数模块', text: '模块正文：统计 md 行数并给出 top3', uses: 2 }],
+  },
+  '/dsh-workbench/api/templates': {
+    ok: true,
+    items: [{
+      id: 'tpl_1', title: '行数巡检模板', goal: '模板目标：统计 md 行数 top3',
+      plan: '模板计划：先扫描再排序', instruction: '模板指令：只读不改文件',
+      moduleIds: ['mod_2'], model: 'deepseek-official/deepseek-flash', sessionMode: 'new', uses: 4,
+    }],
   },
 }
 
@@ -261,6 +270,35 @@ const goalInput = findNode(tree, n => n.type === 'input' && n.props?.id === 'wb-
 if (!goalInput) fail('goal input missing', tree)
 // Prefilled from the previous dispatch: the form must not demand retyping.
 if (goalInput.props.value !== '统计 md 行数 top3') fail('goal not prefilled from the last run: ' + JSON.stringify(goalInput.props.value))
+// Templates: one choice fills every slot. Selecting must rewrite the slots and
+// stamp the template id onto the dispatch, or reuse is still manual labour.
+const templateSelect = findNode(tree, n => n.type === 'select' && n.props?.id === 'wb-template')
+if (!templateSelect) fail('template selector missing', tree)
+if (!(templateSelect.props.children || []).some(child => child?.props?.value === 'tpl_1')) {
+  fail('templates from /api/templates not offered', tree)
+}
+if (!includesText(tree, 'saveTemplate')) fail('no save-as-template control', tree)
+templateSelect.props.onChange({ target: { value: 'tpl_1' } })
+tree = renderPanel()
+const goalFromTemplate = findNode(tree, n => n.type === 'input' && n.props?.id === 'wb-goal')
+if (goalFromTemplate.props.value !== '模板目标：统计 md 行数 top3') {
+  fail('template did not fill the goal slot: ' + JSON.stringify(goalFromTemplate.props.value))
+}
+const planFromTemplate = findNode(tree, n => n.type === 'textarea' && n.props?.id === 'wb-plan')
+if (planFromTemplate.props.value !== '模板计划：先扫描再排序') fail('template did not fill the plan slot')
+const saveTplButton = findNode(tree, n => n.type === 'button' && findText(n.props?.children, 'saveTemplate'))
+if (!saveTplButton) fail('save-as-template button vanished', tree)
+saveTplButton.props.onClick()
+await new Promise(resolve => setTimeout(resolve, 20))
+const templateSave = requests.filter(r => r.path === '/dsh-workbench/api/templates').pop()
+if (!templateSave) fail('saving a template did not call the templates route')
+if (templateSave.body.id !== 'tpl_1') fail('saving from a selected template lost its id: ' + JSON.stringify(templateSave.body))
+if (!String(templateSave.body.goal || '').includes('模板目标')) fail('template save did not carry the slots: ' + JSON.stringify(templateSave.body))
+if (!Array.isArray(templateSave.body.moduleIds) || !templateSave.body.moduleIds.includes('mod_2')) {
+  fail('template save did not carry the module ids: ' + JSON.stringify(templateSave.body))
+}
+tree = renderPanel()
+
 const sessionSelect = findNode(tree, n => n.type === 'select' && n.props?.id === 'wb-session')
 if (!sessionSelect) fail('session target selector missing', tree)
 if (!(sessionSelect.props.children || []).some(child => child?.props?.value === 'session-ccc')) {
@@ -297,9 +335,10 @@ const dispatchRequest = requests.filter(r => r.path === '/dsh-workbench/api/disp
 if (!dispatchRequest) fail('preview did not call the dispatch route', tree)
 if (dispatchRequest.body.sessionId !== 'session-ccc') fail('preview did not carry the chosen session: ' + JSON.stringify(dispatchRequest.body))
 if (dispatchRequest.body.dryRun !== true) fail('preview was not a dry run: ' + JSON.stringify(dispatchRequest.body))
-if (!Array.isArray(dispatchRequest.body.moduleIds) || dispatchRequest.body.moduleIds[0] !== 'mod_1') {
-  fail('inserted module was not declared on the dispatch: ' + JSON.stringify(dispatchRequest.body))
-}
+const dispatchedModules = Array.isArray(dispatchRequest.body.moduleIds) ? dispatchRequest.body.moduleIds : []
+if (!dispatchedModules.includes('mod_1')) fail('inserted module was not declared on the dispatch: ' + JSON.stringify(dispatchRequest.body))
+if (!dispatchedModules.includes('mod_2')) fail('template module ids were dropped by the dispatch: ' + JSON.stringify(dispatchRequest.body))
+if (dispatchRequest.body.templateId !== 'tpl_1') fail('preview did not carry the template id: ' + JSON.stringify(dispatchRequest.body))
 if (!findText(tree, 'previewReady')) fail('preview confirmation block not rendered', tree)
 
 // --- history tab: digest report, raw text folded ----------------------------
@@ -308,6 +347,8 @@ tree = renderPanel()
 if (findClass(tree, 'wb-compose')) fail('task form leaked into the history tab', tree)
 if (!findClass(tree, 'wb-runs')) fail('run list missing on the history tab', tree)
 // The newest run is selected by default; select the finished one.
+if (!findText(tree, '行数巡检模板')) fail('history row did not show the template tag', tree)
+if (!findClass(tree, 'wb-run-row-tpl')) fail('template tag is not styled as its own chip', tree)
 const olderRow = findNode(tree, n => n.props?.className?.includes?.('wb-run-row') && n.props?.['data-active'] === 'false')
 if (!olderRow) fail('no selectable older run in the history list', tree)
 olderRow.props.onClick()
@@ -354,6 +395,7 @@ if (iconTree?.type !== 'svg') fail('sidebar icon not an svg', tree)
 
 console.log('tabs: run/task/history/workspace, one body at a time')
 console.log('task tab: prefill ok, module insert ok, session target ok')
+console.log('templates: select fills slots, save carries id+modules, dispatch carries templateId')
 console.log('history tab: conclusion/points/artifacts/pending ok, raw folded')
 console.log('workspace tab: continuity/decision cards/day-grouped audit/metrics ok')
 console.log('sidebar icon:', iconTree.type)

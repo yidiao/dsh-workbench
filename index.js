@@ -1,9 +1,10 @@
-// dsh-workbench v0.6.0 —— 工作区指挥台：四标签页 + 可复用模块派发 + 结论型运行报告
+// dsh-workbench v0.7.0 —— 工作区指挥台：四标签页 + 模块/模板装配 + 结论型运行报告
 //
-// v0.6 的三条改动都针对同一个毛病：面板把 agent 的内部语言当成给人看的东西。
-//   1. 记录先消化：/api/report 输出结论/产物/待确认/统计，原文只作为可展开证据。
-//   2. 输入可装配：/api/modules 持久化可复用模块；派发可指定已有会话（不总是新建）。
-//   3. 一屏一件事：前端拆成 运行 / 任务 / 历史 / 工作区 四个标签页。
+// 面板的每一次改版都在消灭同一种浪费：让用户重复陈述 agent 已经知道的东西。
+//   v0.6：记录先消化（/api/report），原文只当证据；一屏一件事（四个标签页）。
+//   v0.7：可复用从「模块」升到「模板」——/api/templates 存的是整套配方（三槽 +
+//         模块 id + 默认模型/会话目标），选中即填满；派发带 templateId，运行时
+//         记下 templateId/templateTitle，模板被删也不改历史。
 // 三个 Host 工具（wb_get / wb_set / wb_close）保持不变。
 
 import {
@@ -85,10 +86,13 @@ const RUNS_API_PATH = '/dsh-workbench/api/runs'
 const RUNS_CANCEL_API_PATH = '/dsh-workbench/api/runs/cancel'
 const RUNS = join(WB_DIR, 'runs.json')
 const MODULES = join(WB_DIR, 'modules.json')
+const TEMPLATES = join(WB_DIR, 'templates.json')
 const MAX_RUNS = 50
 const MAX_MODULES = 200
+const MAX_TEMPLATES = 100
 const SESSIONS_API_PATH = '/dsh-workbench/api/sessions'
 const MODULES_API_PATH = '/dsh-workbench/api/modules'
+const TEMPLATES_API_PATH = '/dsh-workbench/api/templates'
 const REPORT_API_PATH = '/dsh-workbench/api/report'
 const MAX_SOURCE_BYTES = 256 * 1024
 const MAX_SOURCE_CHARS = 12000
@@ -805,6 +809,59 @@ function newModuleId() {
   return 'mod_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
 }
 
+// ---- v0.7: templates (a module combination + a default session target) -----
+//
+// A module is raw material; a template is the recipe. Picking one fills every
+// slot at once, which is the difference between "reusable pieces exist" and
+// "reuse is cheaper than retyping".
+
+const TEMPLATE_SESSION_MODES = new Set(['new', 'existing', 'any'])
+
+function readTemplates() {
+  const raw = readJsonSafe(TEMPLATES, null)
+  if (!raw || !Array.isArray(raw.items)) return []
+  return raw.items.filter(item => item && typeof item === 'object' && typeof item.id === 'string')
+}
+
+function writeTemplates(items) {
+  ensureDir()
+  writeFileSync(TEMPLATES, JSON.stringify({ version: 1, items: items.slice(0, MAX_TEMPLATES) }, null, 2), 'utf-8')
+}
+
+function newTemplateId() {
+  return 'tpl_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
+}
+
+function templatePayload(template) {
+  return {
+    id: template.id,
+    title: template.title,
+    goal: template.goal || '',
+    plan: template.plan || '',
+    instruction: template.instruction || '',
+    moduleIds: Array.isArray(template.moduleIds) ? template.moduleIds : [],
+    model: template.model || '',
+    sessionMode: template.sessionMode || 'any',
+    uses: Number(template.uses) || 0,
+    lastUsedAt: Number(template.lastUsedAt) || 0,
+    createdAt: template.createdAt,
+    updatedAt: template.updatedAt,
+  }
+}
+
+// Bump the templates a dispatch actually used. Kept separate from the module
+// counter so a template's popularity can be told apart from its parts'.
+function noteTemplateUse(templateId) {
+  if (!templateId) return null
+  const templates = readTemplates()
+  const template = templates.find(item => item.id === templateId)
+  if (!template) return null
+  template.uses = (Number(template.uses) || 0) + 1
+  template.lastUsedAt = Date.now()
+  writeTemplates(templates)
+  return template
+}
+
 function sessionTitle(ctx, sessionId) {
   const events = sessionEventsOf(ctx, sessionId)
   for (let i = events.length - 1; i >= 0; i--) {
@@ -1218,6 +1275,90 @@ export async function apply(ctx) {
     },
   }))
 
+  // Templates: a saved combination of slots (+ module ids + default session
+  // target). Saving one is the point where reuse becomes cheaper than retyping.
+  disposers.push(ctx.webServer.register({
+    kind: 'exact',
+    path: TEMPLATES_API_PATH,
+    handler: async (req, res) => {
+      if (req.method === 'GET') {
+        if (!guard(req, res, 'GET')) return
+        const items = readTemplates()
+          .slice()
+          .sort((a, b) => (Number(b.updatedAt) || 0) - (Number(a.updatedAt) || 0))
+          .map(templatePayload)
+        sendJson(res, 200, { ok: true, items, fetchedAt: new Date().toISOString() })
+        return
+      }
+      if (!guard(req, res, 'POST')) return
+      const body = await readJsonBody(req)
+      if (body.tooLarge) { sendJson(res, 413, { ok: false, error: '请求体过大' }); return }
+      if (body.error) { sendJson(res, 400, { ok: false, error: '请求体不是合法 JSON 对象' }); return }
+      const input = body.json
+      const items = readTemplates()
+      const removeId = normaliseText(input.id, 80)
+      if (removeId === INVALID) { sendJson(res, 400, { ok: false, error: '字段类型或长度不合法' }); return }
+      if (removeId && input.remove === true) {
+        const next = items.filter(item => item.id !== removeId)
+        if (next.length === items.length) { sendJson(res, 404, { ok: false, error: '模板不存在' }); return }
+        writeTemplates(next)
+        appendAudit({ action: 'template.remove', requestId: removeId, summary: removeId })
+        sendJson(res, 200, { ok: true, items: next.map(templatePayload) })
+        return
+      }
+      const title = normaliseText(input.title, 120)
+      const goal = normaliseText(input.goal, 2000)
+      const plan = normaliseText(input.plan, 2000)
+      const instruction = normaliseText(input.instruction, 2000)
+      const model = normaliseText(input.model, 200)
+      const sessionMode = normaliseText(input.sessionMode, 20)
+      if ([title, goal, plan, instruction, model, sessionMode].includes(INVALID)) {
+        sendJson(res, 400, { ok: false, error: '字段类型或长度不合法' })
+        return
+      }
+      if (!title) { sendJson(res, 400, { ok: false, error: '模板标题不能为空' }); return }
+      if (!goal) { sendJson(res, 400, { ok: false, error: '模板至少要有目标' }); return }
+      if (sessionMode !== undefined && sessionMode !== '' && !TEMPLATE_SESSION_MODES.has(String(sessionMode))) {
+        sendJson(res, 400, { ok: false, error: 'sessionMode 必须是 new / existing / any' })
+        return
+      }
+      if (input.moduleIds !== undefined && !Array.isArray(input.moduleIds)) {
+        sendJson(res, 400, { ok: false, error: 'moduleIds 必须是数组' })
+        return
+      }
+      const moduleIds = Array.isArray(input.moduleIds)
+        ? input.moduleIds.filter(id => typeof id === 'string' && id.length <= 80).slice(0, 20)
+        : []
+      const now = Date.now()
+      const existing = removeId && items.find(item => item.id === removeId)
+        || items.find(item => item.title === title)
+      let saved
+      if (existing) {
+        Object.assign(existing, {
+          title,
+          goal,
+          plan: plan || '',
+          instruction: instruction || '',
+          moduleIds,
+          model: model || '',
+          sessionMode: sessionMode || 'any',
+          updatedAt: now,
+        })
+        saved = existing
+      } else {
+        saved = {
+          id: newTemplateId(), title, goal, plan: plan || '', instruction: instruction || '',
+          moduleIds, model: model || '', sessionMode: sessionMode || 'any',
+          uses: 0, createdAt: now, updatedAt: now,
+        }
+        items.unshift(saved)
+      }
+      writeTemplates(items)
+      appendAudit({ action: 'template.save', requestId: saved.id, summary: `${saved.title} · ${moduleIds.length} modules` })
+      sendJson(res, 200, { ok: true, template: templatePayload(saved), items: items.map(templatePayload) })
+    },
+  }))
+
   // Dispatch composes a prompt for a real DSH Session through the official
   // Host sessionController. It never calls a provider directly and only runs
   // when the workspace config opts in (`execution.enabled`).
@@ -1238,11 +1379,20 @@ export async function apply(ctx) {
       // (its history and approvals stay put) instead of creating a new one.
       const targetSessionId = normaliseText(input.sessionId, 200)
       const moduleIds = Array.isArray(input.moduleIds) ? input.moduleIds.filter(id => typeof id === 'string').slice(0, 20) : []
-      if (goal === INVALID || plan === INVALID || instruction === INVALID || model === INVALID || targetSessionId === INVALID) {
+      // Optional template: a saved recipe. It supplies the module list when the
+      // caller did not, and its use counter tells us which recipes actually get
+      // reused (the raw data for the canvas phase).
+      const templateId = normaliseText(input.templateId, 80)
+      if (goal === INVALID || plan === INVALID || instruction === INVALID || model === INVALID || targetSessionId === INVALID || templateId === INVALID) {
         sendJson(res, 400, { ok: false, error: '字段类型或长度不合法' })
         return
       }
       if (!goal) { sendJson(res, 400, { ok: false, error: 'goal 不能为空' }); return }
+      const template = templateId ? readTemplates().find(item => item.id === templateId) : null
+      const templateMissing = Boolean(templateId) && !template
+      const effectiveModuleIds = moduleIds.length
+        ? moduleIds
+        : (template && Array.isArray(template.moduleIds) ? template.moduleIds.slice(0, 20) : [])
       const exec = executionConfig()
       const controller = serviceGet(ctx, 'sessionController')
       const sessionMode = targetSessionId ? 'existing' : 'new'
@@ -1259,6 +1409,10 @@ export async function apply(ctx) {
           model: model || '',
           sessionMode,
           sessionId: targetSessionId || '',
+          templateId: templateId || '',
+          templateTitle: template?.title || '',
+          templateMissing,
+          templateModuleIds: effectiveModuleIds,
           memoryFingerprint: memoryPreviewPayload().memory.fingerprint,
         })
         return
@@ -1331,24 +1485,32 @@ export async function apply(ctx) {
         createdAt: now,
         updatedAt: now,
         cwd: exec.cwd,
+        ...(template ? { templateId: template.id, templateTitle: template.title } : {}),
         ...(modelWarning ? { warning: modelWarning } : {}),
       }
       const runs = readRuns()
       runs.unshift(run)
       writeRuns(runs)
-      if (moduleIds.length) {
+      if (template) noteTemplateUse(template.id)
+      if (effectiveModuleIds.length) {
         const modules = readModules()
         let touched = false
         for (const module of modules) {
-          if (!moduleIds.includes(module.id)) continue
+          if (!effectiveModuleIds.includes(module.id)) continue
           module.uses = (Number(module.uses) || 0) + 1
           module.lastUsedAt = now
           touched = true
         }
         if (touched) writeModules(modules)
       }
-      appendAudit({ action: 'dispatch.start', requestId: runId, summary: `session ${sessionId} (${sessionMode}) · ${model || '默认模型'} · ${goal.slice(0, 80)}` })
-      sendJson(res, 200, { ok: true, dryRun: false, run, ...(modelWarning ? { warning: modelWarning } : {}) })
+      appendAudit({ action: 'dispatch.start', requestId: runId, summary: `session ${sessionId} (${sessionMode}) · ${model || '默认模型'}${template ? ' · 模板 ' + template.title : ''} · ${goal.slice(0, 80)}` })
+      sendJson(res, 200, {
+        ok: true,
+        dryRun: false,
+        run,
+        ...(templateMissing ? { templateMissing: true, warning: '模板已不存在，按当前内容派发' } : {}),
+        ...(modelWarning ? { warning: modelWarning } : {}),
+      })
     },
   }))
 

@@ -111,6 +111,7 @@ const runsCancelRoute = registered.find(r => r.regType === 'web' && r.path === '
 const sessionsRoute = registered.find(r => r.regType === 'web' && r.path === '/dsh-workbench/api/sessions')
 const modulesRoute = registered.find(r => r.regType === 'web' && r.path === '/dsh-workbench/api/modules')
 const reportRoute = registered.find(r => r.regType === 'web' && r.path === '/dsh-workbench/api/report')
+const templatesRoute = registered.find(r => r.regType === 'web' && r.path === '/dsh-workbench/api/templates')
 const toolNames = registered.filter(r => r.regType === 'tool').map(r => r.name)
 
 console.log('registered count:', registered.length)
@@ -120,12 +121,13 @@ console.log('models path:', modelsRoute?.path)
 console.log('write paths:', stateEditRoute?.path, decisionRoute?.path, auditRoute?.path)
 console.log('dispatch paths:', dispatchRoute?.path, runsRoute?.path, runsCancelRoute?.path)
 console.log('v0.6 paths:', sessionsRoute?.path, modulesRoute?.path, reportRoute?.path)
+console.log('v0.7 paths:', templatesRoute?.path)
 console.log('tool names:', toolNames)
 
 const ok =
   route && route.path === '/dsh-workbench/api/state-v2' &&
   previewRoute && previewVersionRoute && modelsRoute && stateEditRoute && decisionRoute && auditRoute &&
-  dispatchRoute && runsRoute && runsCancelRoute && sessionsRoute && modulesRoute && reportRoute &&
+  dispatchRoute && runsRoute && runsCancelRoute && sessionsRoute && modulesRoute && reportRoute && templatesRoute &&
   ['wb_get', 'wb_set', 'wb_close', 'wb_models', 'wb_runs'].every(n => toolNames.includes(n)) &&
   toolNames.length === 5
 if (!ok) { console.error('FAIL: registration mismatch'); process.exit(1) }
@@ -583,6 +585,98 @@ const missingRemoveRes = response()
 await modulesRoute.handler(postReq(modulesRoute.path, { id: 'mod_missing', remove: true }), missingRemoveRes)
 if (missingRemoveRes.statusCode !== 404) fail('removing an absent module should be 404')
 
+// ---- v0.7: templates ------------------------------------------------------
+// A template is the recipe (slots + module ids + default session target). It is
+// what makes reuse cheaper than retyping, so it has to survive a round trip and
+// actually drive a dispatch.
+const tplRes = response()
+await templatesRoute.handler(postReq(templatesRoute.path, {
+  title: '行数巡检', goal: '统计 _workbench 下 md 行数Top3', plan: '1.扫描 2.统计 3.排序',
+  instruction: '只读，不改文件', moduleIds: ['mod_a', 'mod_c'],
+  model: 'deepseek-official/deepseek-flash', sessionMode: 'new',
+}), tplRes)
+if (tplRes.statusCode !== 200) fail('template save status ' + tplRes.body)
+const savedTpl = JSON.parse(tplRes.body)
+const templateId = savedTpl.template.id
+if (!templateId || !templateId.startsWith('tpl_')) fail('template id missing: ' + tplRes.body)
+if (savedTpl.template.moduleIds.length !== 2) fail('template did not keep its module ids')
+
+const tplListRes = response()
+await templatesRoute.handler(getReq(templatesRoute.path), tplListRes)
+const tplListed = JSON.parse(tplListRes.body)
+if (!Array.isArray(tplListed.items) || tplListed.items.length !== 1) fail('template list GET ' + tplListRes.body)
+if (tplListed.items[0].goal !== '统计 _workbench 下 md 行数Top3') fail('template goal lost on read')
+
+const tplUpsertRes = response()
+await templatesRoute.handler(postReq(templatesRoute.path, {
+  title: '行数巡检', goal: '统计 md 行数Top5', plan: '', instruction: '', moduleIds: ['mod_a', 'mod_b'], sessionMode: 'any',
+}), tplUpsertRes)
+const tplUpserted = JSON.parse(tplUpsertRes.body)
+if (tplUpserted.items.length !== 1) fail('same-title template duplicated instead of updating')
+if (tplUpserted.template.id !== templateId) fail('template upsert changed the id')
+if (!tplUpserted.template.goal.includes('Top5')) fail('template upsert did not update the goal')
+
+const tplGuards = [
+  [{ title: '', goal: 'x', model: '', sessionMode: 'any' }, 400, 'empty template title'],
+  [{ title: 'x', goal: '', model: '', sessionMode: 'any' }, 400, 'template without goal'],
+  [{ title: 'x', goal: 'y', sessionMode: 'weird' }, 400, 'invalid sessionMode'],
+  [{ title: 'x', goal: 'y', moduleIds: 'nope' }, 400, 'non-array moduleIds'],
+]
+for (const [payload, expected, label] of tplGuards) {
+  const res = response()
+  await templatesRoute.handler(postReq(templatesRoute.path, payload), res)
+  if (res.statusCode !== expected) fail(label + ' got ' + res.statusCode + ' ' + res.body)
+}
+const tplMethodRes = response()
+await templatesRoute.handler({ ...getReq(templatesRoute.path), method: 'PUT' }, tplMethodRes)
+if (tplMethodRes.statusCode !== 405) fail('templates route accepted PUT')
+const tplMissingRemove = response()
+await templatesRoute.handler(postReq(templatesRoute.path, { id: 'tpl_missing', remove: true }), tplMissingRemove)
+if (tplMissingRemove.statusCode !== 404) fail('removing an absent template should be 404')
+
+// A template-driven dispatch must land its identity on the run, inherit the
+// template's module ids when the caller sent none, and bump the template counter.
+const tplDispatchRes = response()
+await dispatchRoute.handler(postReq(dispatchRoute.path, {
+  goal: '统计 md 行数Top3', templateId, model: 'deepseek-official/deepseek-flash',
+}), tplDispatchRes)
+if (tplDispatchRes.statusCode !== 200) fail('template dispatch failed ' + tplDispatchRes.body)
+const tplDispatch = JSON.parse(tplDispatchRes.body)
+if (tplDispatch.run.templateId !== templateId) fail('run did not record templateId: ' + tplDispatchRes.body)
+if (tplDispatch.run.templateTitle !== '行数巡检') fail('run did not snapshot templateTitle')
+const tplAfterUse = JSON.parse(readFileSync(join(tempWorkspace, 'templates.json'), 'utf8')).items[0]
+if (tplAfterUse.uses !== 1) fail('template use counter not bumped: ' + JSON.stringify(tplAfterUse))
+if (tplAfterUse.moduleIds.length !== 2) fail('template module ids were not inherited by the dispatch')
+
+// A stale template id must not block the work: dispatch succeeds, run has no
+// template, and the response says the template was missing.
+const staleRes = response()
+await dispatchRoute.handler(postReq(dispatchRoute.path, {
+  goal: '模板没了也要能派发', templateId: 'tpl_gone', model: 'deepseek-official/deepseek-flash',
+}), staleRes)
+if (staleRes.statusCode !== 200) fail('stale template id blocked the dispatch: ' + staleRes.body)
+const stale = JSON.parse(staleRes.body)
+if (stale.templateMissing !== true) fail('stale template id was not reported')
+if (stale.run.templateId) fail('stale template id leaked onto the run')
+
+const tplDryRunRes = response()
+await dispatchRoute.handler(postReq(dispatchRoute.path, {
+  goal: '预览模板', templateId, dryRun: true, model: 'deepseek-official/deepseek-flash',
+}), tplDryRunRes)
+const tplDryRun = JSON.parse(tplDryRunRes.body)
+if (!tplDryRun.dryRun) fail('template dry run did not preview')
+if (!tplDryRun.templateId) fail('template dry run did not echo the template id')
+if (tplDryRun.templateModuleIds.length !== 2) fail('template dry run did not resolve the module ids')
+
+// Deleting is audited and does not touch history: runs keep their snapshot.
+const tplRemoveRes = response()
+await templatesRoute.handler(postReq(templatesRoute.path, { id: templateId, remove: true }), tplRemoveRes)
+if (tplRemoveRes.statusCode !== 200) fail('template remove status ' + tplRemoveRes.body)
+if (JSON.parse(tplRemoveRes.body).items.length !== 0) fail('template not removed')
+const runsAfterTplRemove = JSON.parse(readFileSync(join(tempWorkspace, 'runs.json'), 'utf8')).items
+const tplRun = runsAfterTplRemove.find(item => item.runId === tplDispatch.run.runId)
+if (!tplRun || tplRun.templateTitle !== '行数巡检') fail('deleting a template erased its run snapshot')
+
 // The report is the panel's payload: it must be a digest, never the raw text.
 const reportRes = response()
 await reportRoute.handler(getReq(reportRoute.path + '?runId=' + encodeURIComponent(run.runId)), reportRes)
@@ -664,7 +758,7 @@ if (brokenCancelRes.statusCode !== 409) {
 const auditV6Res = response()
 await auditRoute.handler(getReq(auditRoute.path + '?limit=30'), auditV6Res)
 const auditV6Actions = JSON.parse(auditV6Res.body).entries.map(entry => entry.action)
-for (const action of ['module.save', 'module.remove']) {
+for (const action of ['module.save', 'module.remove', 'template.save', 'template.remove', 'dispatch.archive']) {
   if (!auditV6Actions.includes(action)) fail('audit missing ' + action)
 }
 
@@ -672,6 +766,7 @@ console.log('sessions:', sessionsPayload.items.length, '| titled ok | existing-s
 console.log('modules: save/upsert/list/remove ok | use counter ok')
 console.log('report: conclusion ok, points', report.points.length, ', artifacts', report.artifacts.length, ', pending', report.pending.length)
 console.log('v0.6 guards: 400/404/405/413 enforced')
+console.log('templates: save/upsert/list/remove ok | dispatch inherits modules, uses+1 | stale id → templateMissing')
 
 console.log('dispatch:', run.runId, '| session:', run.sessionId, '| dry-run ok | disabled gate ok | cancel ok')
 console.log('dispatch guards: 405/400/401/403 enforced')
