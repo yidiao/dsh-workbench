@@ -51,7 +51,21 @@ const payloads = {
     execution: { enabled: true, cwd: 'D:/workspace', controller: true },
     fetchedAt: '2026-10-31T00:00:00.000Z',
   },
-  '/dsh-workbench/api/runs': { ok: true, items: [] },
+  '/dsh-workbench/api/runs': {
+    ok: true,
+    items: [
+      {
+        runId: 'run_A', sessionId: 'session-aaa', goal: '统计 md 行数 top3',
+        model: 'deepseek-flash', status: 'running', cwd: 'D:/AI Pj',
+        createdAt: 1793944774996, updatedAt: 1793944774996, steps: 6, toolCalls: 11,
+      },
+      {
+        runId: 'run_B', sessionId: 'session-bbb', goal: '上一条已完成的任务',
+        model: 'deepseek-flash', status: 'done', cwd: 'D:/AI Pj',
+        createdAt: 1793944000000, updatedAt: 1793944100000, reply: '上一次运行的回复正文',
+      },
+    ],
+  },
   '/dsh-workbench/api/models': {
     ok: true,
     available: true,
@@ -137,30 +151,66 @@ function findNode(node, predicate) {
   return null
 }
 
+function textDump(node, out = []) {
+  if (typeof node === 'string') { if (node.trim()) out.push(node.trim()); return out }
+  if (Array.isArray(node)) { node.forEach(child => textDump(child, out)); return out }
+  if (node && typeof node === 'object') textDump(node.props?.children, out)
+  return out
+}
+
+function fail(message, tree) {
+  console.error('FAIL:', message)
+  if (tree) console.error('rendered text:', JSON.stringify(textDump(tree).slice(0, 24)))
+  process.exit(1)
+}
+
 let tree = renderPanel()
-if (!findClass(tree, 'wb-page')) { console.error('FAIL: panel did not mount (.wb-page missing)'); process.exit(1) }
+if (!findClass(tree, "wb-page")) fail("panel did not mount (.wb-page missing)", tree)
 
 // Let the read-only fetches settle, then render again with data present.
 await new Promise(resolve => setTimeout(resolve, 20))
 tree = renderPanel()
-if (!findClass(tree, 'wb-continuity')) { console.error('FAIL: continuity section missing after load'); process.exit(1) }
-if (!findClass(tree, 'wb-audit')) { console.error('FAIL: audit section missing after load'); process.exit(1) }
-if (!findText(tree, '测试主线')) { console.error('FAIL: fetched mainline not rendered'); process.exit(1) }
+
+// REGRESSION: the run card must come from runs.json, not from a dispatch
+// response held in component state — otherwise switching panels and coming
+// back silently loses the run that is still executing.
+if (!findNode(tree, node => node.props?.className?.includes?.("wb-run"))) fail("run card missing after load (not derived from runs.json)", tree)
+if (!findText(tree, "统计 md 行数 top3")) fail("newest run from runs.json not rendered", tree)
+if (!findText(tree, "running")) fail("running status not rendered", tree)
+if (!findClass(tree, "wb-run-list")) fail("run history list missing", tree)
+
+// Selecting an older run from the history shows its captured reply.
+const historyRow = findNode(tree, node => node.props?.className?.includes?.("wb-run-row") && node.props?.["data-active"] === "false")
+if (!historyRow) fail("no selectable older run in history", tree)
+historyRow.props.onClick()
+tree = renderPanel()
+if (!findText(tree, "上一次运行的回复正文")) fail("selecting a run from history did not show its reply", tree)
+
+if (!findClass(tree, "wb-continuity")) fail("continuity section missing after load", tree)
+if (!findText(tree, "测试主线")) fail("fetched mainline not rendered", tree)
+
+// Secondary detail is collapsed: audit appears only after opening it.
+if (findClass(tree, "wb-audit")) fail("audit rendered before the details section was opened", tree)
+const moreToggle = findNode(tree, node => node.props?.className?.includes?.("wb-more-toggle"))
+if (!moreToggle) fail("no details toggle for tasks/decisions/audit", tree)
+moreToggle.props.onClick()
+tree = renderPanel()
+if (!findClass(tree, "wb-audit")) fail("audit section missing after opening details", tree)
+if (!findText(tree, "state.edit")) fail("audit entry not rendered", tree)
 
 // Open the continuity editor and confirm the editable controls exist.
-const editButton = findNode(tree, node => node.type === 'button' && findText(node.props?.children, 'edit'))
-if (!editButton) { console.error('FAIL: no edit button in the continuity section'); process.exit(1) }
+const editButton = findNode(tree, node => node.type === "button" && findText(node.props?.children, "edit"))
+if (!editButton) fail("no edit button in the continuity section", tree)
 editButton.props.onClick()
 tree = renderPanel()
-if (!findNode(tree, node => node.type === 'input' && node.props?.id === 'wb-edit-mainline')) {
-  console.error('FAIL: continuity editor did not open')
-  process.exit(1)
-}
-if (!findText(tree, 'save')) { console.error('FAIL: no save button in the editor'); process.exit(1) }
+if (!findNode(tree, node => node.type === "input" && node.props?.id === "wb-edit-mainline")) fail("continuity editor did not open", tree)
+if (!findText(tree, "save")) fail("no save button in the editor", tree)
 
 // Sidebar icon must render an svg element.
 const iconTree = render(sidebar.renderFn({ size: 24, active: false }))
-if (iconTree?.type !== 'svg') { console.error('FAIL: sidebar icon not an svg'); process.exit(1) }
+if (iconTree?.type !== "svg") fail("sidebar icon not an svg", tree)
 
-console.log('panel mounted: true | continuity editor: true | audit: true | sidebar icon:', iconTree.type)
-console.log('\nCLIENT HARNESS PASS')
+console.log("panel mounted: true | run card from runs.json: true | history selection: true | details collapsed: true")
+console.log("continuity editor: true | audit: true | sidebar icon:", iconTree.type)
+console.log('')
+console.log('CLIENT HARNESS PASS')

@@ -41,12 +41,24 @@ const mockSessionController = {
   cancel: async (request) => { dispatchCalls.cancel.push(request); return { accepted: true } },
   list: async () => [{ sessionId: createdSessionId, agentAvailable: true, running: sessionRunning, blank: false, updatedAt: Date.now() }],
 }
+let sessionWaiting = false
+const sessionEvents = [
+  { type: 'turn/start', time: 1793945000000, data: {} },
+  { type: 'step/start', time: 1793945001000, data: {} },
+  { type: 'tool/call', time: 1793945002000, data: { name: 'ops_bash', callId: 'call-1' } },
+  { type: 'tool/result', time: 1793945003000, data: { callId: 'call-1' } },
+  { type: 'step/start', time: 1793945004000, data: {} },
+  { type: 'assistant/message', time: 1793945005000, data: { message: { content: [{ type: 'text', text: '完成：测试回复。' }] } } },
+  { type: 'turn/end', time: 1793945006000, data: { reason: { kind: 'end_turn' } } },
+]
+const waitingEvents = [
+  { type: 'turn/start', time: 1793945000000, data: {} },
+  { type: 'step/start', time: 1793945001000, data: {} },
+  { type: 'tool/call', time: 1793945002000, data: { name: 'ask_user_question', callId: 'call-9' } },
+]
 const mockSessions = {
   get: (id) => id === createdSessionId ? {
-    snapshotEvents: () => [
-      { type: 'turn/end', data: { reason: { kind: 'end_turn' } } },
-      { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '完成：测试回复。' }] } } },
-    ],
+    snapshotEvents: () => (sessionWaiting ? waitingEvents : sessionEvents),
   } : undefined,
 }
 const mockLlm = {
@@ -357,6 +369,25 @@ const runsRes = response()
 await runsRoute.handler(getReq(runsRoute.path), runsRes)
 const runsPayload = JSON.parse(runsRes.body)
 if (runsPayload.items?.[0]?.status !== 'running') { console.error('FAIL: live run status', runsPayload.items?.[0]); process.exit(1) }
+// Live progress annotation: the panel needs counts and a "parked on a question"
+// flag, otherwise a waiting run looks identical to a working one.
+const liveRun = runsPayload.items[0]
+if (liveRun.steps !== 2 || liveRun.toolCalls !== 1) {
+  console.error('FAIL: run progress annotation', { steps: liveRun.steps, toolCalls: liveRun.toolCalls })
+  process.exit(1)
+}
+if (liveRun.waiting !== false) { console.error('FAIL: waiting flag set for a working run', liveRun.waiting); process.exit(1) }
+if (liveRun.activityAt !== 1793945006000) { console.error('FAIL: activityAt not derived from session events', liveRun.activityAt); process.exit(1) }
+
+sessionWaiting = true
+const runsWaitingRes = response()
+await runsRoute.handler(getReq(runsRoute.path), runsWaitingRes)
+const waitingRun = JSON.parse(runsWaitingRes.body).items?.[0]
+if (waitingRun?.waiting !== true || waitingRun?.steps !== 1) {
+  console.error('FAIL: waiting annotation', waitingRun)
+  process.exit(1)
+}
+sessionWaiting = false
 
 sessionRunning = false
 const runsDoneRes = response()

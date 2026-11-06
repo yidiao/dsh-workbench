@@ -485,6 +485,8 @@ function finaliseRun(ctx, run) {
   const kind = lastTurnEndKind(events)
   run.status = kind === 'error' ? 'error' : (kind === 'aborted' || kind === 'interrupted') ? 'cancelled' : 'done'
   run.reply = lastAssistantText(ctx, run.sessionId)
+  // A finished run is no longer parked on a question, even if it last was.
+  run.waiting = false
   run.updatedAt = Date.now()
   // Close the audit chain: dispatch.start must be answerable with a terminal
   // entry, otherwise a finished run is indistinguishable from a lost one.
@@ -495,25 +497,72 @@ function finaliseRun(ctx, run) {
   })
 }
 
+// Live progress for a dispatched run, taken from the session's own events.
+// Only available while the session is loaded in this Host process; a cold
+// session leaves the previously stored values untouched.
+function runProgress(events) {
+  if (!Array.isArray(events) || !events.length) return null
+  let steps = 0
+  let toolCalls = 0
+  let assetCount = 0
+  let activityAt = 0
+  for (const event of events) {
+    const time = Number(event?.time)
+    if (Number.isFinite(time) && time > activityAt) activityAt = time
+    if (event?.type === 'step/start') steps++
+    else if (event?.type === 'tool/call') toolCalls++
+    else if (event?.type === 'assistant/message') assetCount++
+  }
+  const last = events[events.length - 1]
+  // The session is parked on a question: no answer can arrive until the user
+  // opens that session, so the run stays 'running' by design.
+  const waiting = last?.type === 'tool/call' && last?.data?.name === 'ask_user_question'
+  return { steps, toolCalls, messages: assetCount, activityAt, waiting }
+}
+
+function applyProgress(run, events) {
+  const progress = runProgress(events)
+  if (!progress) return false
+  let changed = false
+  const assign = (key, value) => {
+    if (value === undefined) return
+    if (run[key] !== value) { run[key] = value; changed = true }
+  }
+  assign('steps', progress.steps)
+  assign('toolCalls', progress.toolCalls)
+  assign('messages', progress.messages)
+  assign('activityAt', progress.activityAt || undefined)
+  assign('waiting', progress.waiting)
+  return changed
+}
+
 async function refreshRuns(ctx, items) {
   const controller = serviceGet(ctx, 'sessionController')
-  if (!controller || typeof controller.list !== 'function') return items
+  let changed = false
+  for (const run of items) {
+    if (!run || typeof run !== 'object' || typeof run.sessionId !== 'string') continue
+    if (applyProgress(run, sessionEventsOf(ctx, run.sessionId))) changed = true
+  }
+  if (!controller || typeof controller.list !== 'function') {
+    if (changed) writeRuns(items)
+    return items
+  }
   let listed
   try {
     listed = await controller.list()
   } catch {
+    if (changed) writeRuns(items)
     return items
   }
   if (listed && !Array.isArray(listed)) listed = listed.value?.items ?? listed.items
   if (!Array.isArray(listed)) listed = []
   const byId = new Map(listed.filter(item => item && typeof item.sessionId === 'string').map(item => [item.sessionId, item]))
-  let changed = false
   for (const run of items) {
     if (!run || typeof run !== 'object' || typeof run.sessionId !== 'string') continue
     const item = byId.get(run.sessionId)
     if (!item) continue
     if (item.running) {
-      if (run.status !== 'running') { run.status = 'running'; changed = true }
+      if (run.status !== 'running') { run.status = 'running'; run.updatedAt = Date.now(); changed = true }
     } else if (run.status === 'running') {
       finaliseRun(ctx, run)
       changed = true

@@ -58,6 +58,16 @@ Dispatching is opt-in per workspace in `workbench.config.json`:
 
 `execution.cwd` is the Session workspace passed to `sessionController.create`; it defaults to the workbench directory itself (or its parent when the directory name starts with `_`). `DSH_WORKBENCH_EXECUTION=1` enables dispatch without a config file; an explicit `enabled: false` keeps it off.
 
+## Panel layout
+
+The panel is ordered by what a half-idle user needs first:
+
+1. **Current run** — status, session id, model, start time, step/tool-call counts and the captured reply. It is rebuilt from `runs.json` on every mount, so switching panels and coming back never loses a running session. A run parked on a question says so and names the workspace that holds the session.
+2. **Recent runs** — compact history from `runs.json`; selecting a row shows that run's captured reply.
+3. **Dispatch** — goal, plan, instruction and model, then `Preview` → `Run now`. Nothing is sent before the explicit confirm.
+4. **Continuity** — mainline, checkpoint, next actions and red lines, with one `Edit` action.
+5. **Workspace details** — tasks, decisions, audit trail and metrics, collapsed by default so the two things that matter (is it running, what did it say) stay on the first screen.
+
 ## Security and privacy
 
 Read endpoints reject non-loopback hosts and apply `connection.requestRejection` before returning workspace data. Write endpoints (`state-edit`, `decision-add`, `dispatch`, `runs/cancel`) apply the same loopback + browser-trust checks, accept only POST with a bounded JSON body (64 KiB), validate field types and lengths, and record each accepted write in `audit.jsonl`. Dispatch requires an explicit `dryRun: false` request, an opt-in workspace config, and a Host `sessionController`; it creates a durable Session and sends one instruction through DSH's normal Agent loop, so the profile's tool permissions, approvals and cancellation lifecycle still apply. The model catalog only reads the Host `llm` service (`listProviders`/`listModels`) and the current default selection; it never calls a model, selects a model, or changes provider configuration. Memory sources are capped at 256 KiB per file and 12,000 characters per source; configured paths are constrained to the workbench root, including existing symlink targets, and responses expose relative source names rather than absolute paths. Workspace files and relay data are not included in this repository. Do not commit private project files, credentials, or generated ledgers.
@@ -71,6 +81,6 @@ node ._host_check.mjs
 node ._client_check.mjs
 ```
 
-`._host_check.mjs` runs the Host bundle against a mocked `sessionController` and the real filesystem: registration, guards, dispatch lifecycle (`create → selectModel → prompt`), run status/reply, cancellation, and the audit actions (`dispatch.start/done/cancel`) are all asserted — including that `prompt` is called with a real `AbortSignal`, matching the Host API's `prompt(request, signal)` contract. `._client_check.mjs` mounts the panel headlessly and checks the continuity editor, audit trail, and sidebar icon.
+`._host_check.mjs` runs the Host bundle against a mocked `sessionController` and the real filesystem: registration, guards, dispatch lifecycle (`create → selectModel → prompt`), run status/reply, cancellation, live progress annotation (`steps`/`toolCalls`/`waiting`), and the audit actions (`dispatch.start/done/cancel`) are all asserted — including that `prompt` is called with a real `AbortSignal`, matching the Host API's `prompt(request, signal)` contract. `._client_check.mjs` mounts the panel headlessly and asserts the run card is derived from `runs.json` (not from the dispatch response, which is what made the card vanish on remount), that selecting an older run renders its reply, that tasks/decisions/audit stay collapsed until opened, plus the continuity editor and sidebar icon.
 
 Then install the package in a test profile (or a profile you explicitly designate for testing), inspect the live `main` and `sidebar.panellist` slots, and verify the panel in the connected Harness Web UI. A successful package installation alone does not prove that a browser rendered the panel.
