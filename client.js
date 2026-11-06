@@ -15,7 +15,59 @@ window.__ModuleLoader__.load({
     //      always behind a disclosure, never the first thing painted.
     //   2. Input is assembled, not retyped: each field can be filled from a
     //      saved module, and the fields of the previous run are one click away.
+// v1.0 flow copy: three moments instead of five tabs. The panel lives in the
+    // conversation's right column, so it must say the next physical action, not
+    // describe a taxonomy.
+    const FLOW_EN = {
+      momentAttach: 'Attach', momentWork: 'Working', momentClose: 'Close out',
+      momentHint: 'The moment is picked from data: a live run wins, then an unclosed gap, else attach.',
+      guideDescription: 'Attach to the session, work in it, close it out — one memory per project.',
+      sessionMissing: 'No session is bound to this panel, so sync work cannot be queued. Open the workbench from a conversation.',
+      memoryTitle: 'Project memory', memoryRoot: 'root', memoryGapOpen: 'Not closed out yet',
+      memoryActivate: 'Use this project', memoryActivateDone: 'Project bound to this session.',
+      memoryEmpty: 'This project has no memory yet — the first save creates it.',
+      attachHint: 'Pick up where the last session stopped, then say what this one is for.',
+      syncTitle: 'This task', syncPlaceholder: 'What should happen now, in this session?',
+      syncGo: 'Do it here', syncAsync: 'Dispatch instead', syncBusy: 'Queuing…',
+      syncQueued: 'Queued into this session — it continues at the next step.',
+      syncRefused: 'That is long work: it belongs in its own session.',
+      channelSync: 'same session', channelAsync: 'child session', channelWhy: 'why',
+      liveTitle: 'This session', liveIdle: 'idle', liveRunning: 'working',
+      closeTitle: 'Close out', closeNext: 'Next first step', closeDecisionTitle: 'Decision title',
+      closeDecision: 'Judgement (optional)', closeDecisionPlaceholder: 'What was decided, why, what it costs…',
+      closeOutcome: 'Outcome', outcomeGreen: 'green — verified', outcomeYellow: 'yellow — partly',
+      outcomeRed: 'red — failed', closeSubmit: 'Write close-out', closeBusy: 'Writing…',
+      closeDone: 'Close-out written: the injected block now carries the next step.',
+      closeFailed: 'Close-out failed.', closeNeedsNext: 'A close-out needs the next first step.',
+      moreLongJobs: 'Long jobs', moreCanvas: 'Canvas', moreHistory: 'Past runs', moreAudit: 'Audit trail',
+      memoryDecisions: 'Recent decisions', running: 'running',
+    }
+    const FLOW_ZH = {
+      momentAttach: '接上', momentWork: '在做', momentClose: '收工',
+      momentHint: '时刻由数据自动判定：有运行就进「在做」，有未收工的缺口就进「收工」，否则「接上」。',
+      guideDescription: '接上当前会话、在里面做事、收工写回记忆——一个项目一份记忆。',
+      sessionMissing: '这个面板没有绑定会话，同步任务无处可排。请从某个对话里打开工作台。',
+      memoryTitle: '项目记忆', memoryRoot: '根目录', memoryGapOpen: '上次没收工',
+      memoryActivate: '用这个项目', memoryActivateDone: '已把这个项目绑到当前会话。',
+      memoryEmpty: '这个项目还没有记忆——第一次保存时创建。',
+      attachHint: '先接上次停的地方，再说清这次要做什么。',
+      syncTitle: '这次做什么', syncPlaceholder: '现在要在这个会话里做什么？',
+      syncGo: '就在这里做', syncAsync: '改成派长活', syncBusy: '排队中…',
+      syncQueued: '已排进当前会话，下一步就接着做。',
+      syncRefused: '这属于长活，应该给它自己的会话。',
+      channelSync: '同一会话', channelAsync: '子会话', channelWhy: '依据',
+      liveTitle: '当前会话', liveIdle: '空闲', liveRunning: '工作中',
+      closeTitle: '收工', closeNext: '下次第一步', closeDecisionTitle: '判断标题',
+      closeDecision: '判断（可选）', closeDecisionPlaceholder: '决定了什么、为什么、代价是什么…',
+      closeOutcome: '结论', outcomeGreen: '绿——已验证', outcomeYellow: '黄——部分',
+      outcomeRed: '红——失败', closeSubmit: '写入收工', closeBusy: '写入中…',
+      closeDone: '已写入收工：注入块里已经带上下一步。',
+      closeFailed: '收工写入失败。', closeNeedsNext: '收工必须写下次的第一步。',
+      moreLongJobs: '长活', moreCanvas: '画布', moreHistory: '历史运行', moreAudit: '审计时间线',
+      memoryDecisions: '最近判断', running: '运行中',
+    }
     const en = {
+      ...FLOW_EN,
       title: 'Workbench', refresh: 'Refresh', loading: 'Reading…',
       error: 'Could not read workbench files.', retry: 'Try again',
       execOn: 'execution on', execOff: 'execution off',
@@ -84,6 +136,7 @@ window.__ModuleLoader__.load({
       updated: 'Updated', noData: '—',
     }
     const zh = {
+      ...FLOW_ZH,
       title: '工作台', refresh: '刷新', loading: '读取中…',
       error: '无法读取工作台文件。', retry: '重试',
       execOn: '执行已启用', execOff: '执行未启用',
@@ -153,7 +206,17 @@ window.__ModuleLoader__.load({
     }
 
     const CSS = `
-      .wb-page{box-sizing:border-box;height:100%;overflow-y:auto;overflow-x:hidden;padding:20px clamp(14px,3vw,44px) 48px;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-base);font:inherit}
+      .wb-page{box-sizing:border-box;height:100%;overflow-y:auto;overflow-x:hidden;padding:14px 12px 28px;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-base);font:inherit}
+      .wb-moments{display:flex;gap:6px;margin-bottom:10px}
+      .wb-moment{flex:1;min-width:0;padding:7px 4px;border:1px solid var(--dsw-alias-border-l1);border-radius:9px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12px;cursor:pointer}
+      .wb-moment-reset{flex:0 0 28px;color:var(--dsw-alias-label-tertiary)}
+      .wb-moment[data-active="true"]{background:var(--dsw-alias-bg-layer-2);border-color:var(--dsw-alias-border-l2);color:var(--dsw-alias-label-primary);font-weight:650}
+      .wb-card-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px}
+      .wb-mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10px;word-break:break-all}
+      .wb-warn-note{color:var(--dsw-alias-label-warn,#b8791a)}
+      .wb-channel{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:8px}
+      .wb-chip[data-channel="sync"]{border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-brand-primary)}
+      .wb-details{margin-bottom:12px}
       .wb-wrap{max-width:980px;margin:0 auto}
       .wb-bar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}
       .wb-bar-left,.wb-bar-right{display:flex;align-items:center;gap:9px;min-width:0}
@@ -362,7 +425,7 @@ window.__ModuleLoader__.load({
       return groups
     }
 
-    function WorkbenchPanel({ t }) {
+    function WorkbenchPanel({ t, sessionId }) {
       const [data, setData] = React.useState(null)
       const [error, setError] = React.useState(false)
       const [busy, setBusy] = React.useState(false)
@@ -401,6 +464,16 @@ window.__ModuleLoader__.load({
       const [decisionDraft, setDecisionDraft] = React.useState('')
       const [decisionBusy, setDecisionBusy] = React.useState(false)
       const [decisionNotice, setDecisionNotice] = React.useState('')
+const [momentOverride, setMomentOverride] = React.useState('')
+      const [momentNotice, setMomentNotice] = React.useState('')
+      const [syncText, setSyncText] = React.useState('')
+      const [channel, setChannel] = React.useState(null)
+      const [syncBusy, setSyncBusy] = React.useState(false)
+      const [syncNotice, setSyncNotice] = React.useState('')
+      const [liveState, setLiveState] = React.useState(null)
+      const [closeDraft, setCloseDraft] = React.useState({ next: '', outcome: 'yellow', decision: '', title: '' })
+      const [closeBusy, setCloseBusy] = React.useState(false)
+      const [closeNotice, setCloseNotice] = React.useState('')
       const prefilled = React.useRef(false)
 
       const applyRuns = React.useCallback(items => {
@@ -503,6 +576,90 @@ window.__ModuleLoader__.load({
           const payload = await response.json()
           if (payload && payload.ok === true) applyRuns(payload.items)
         } catch { /* keep previous runs */ }
+      }
+
+const boundSessionId = String(sessionId || '').trim()
+
+      // One request shape for the flow routes: a 409 carries a decision, not an
+      // error string, so the caller must be able to read the payload either way.
+      async function postJsonStatus(path, body) {
+        const response = await fetch(path, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify(body),
+        })
+        let payload = null
+        try { payload = await response.json() } catch { /* non-JSON */ }
+        return { status: response.status, payload: payload || null, ok: Boolean(response.ok && payload && payload.ok === true) }
+      }
+
+      async function decideChannel(text) {
+        const trimmed = String(text || '').trim()
+        if (!trimmed) { setChannel(null); return }
+        try {
+          const result = await postJsonStatus('/dsh-workbench/api/channel', { text: trimmed })
+          if (result.ok) setChannel(result.payload)
+        } catch { /* keep the previous decision */ }
+      }
+
+      async function loadLive() {
+        if (!boundSessionId) { setLiveState(null); return }
+        try {
+          const response = await fetch('/dsh-workbench/api/live?sessionId=' + encodeURIComponent(boundSessionId), { cache: 'no-store', credentials: 'same-origin' })
+          const payload = await response.json()
+          if (payload && payload.ok === true) setLiveState(payload)
+        } catch { /* keep the previous live state */ }
+      }
+
+      async function submitSync() {
+        const trimmed = syncText.trim()
+        if (!trimmed || syncBusy) return
+        if (!boundSessionId) { setSyncNotice(t('sessionMissing')); return }
+        setSyncBusy(true); setSyncNotice('')
+        try {
+          const result = await postJsonStatus('/dsh-workbench/api/sync', { sessionId: boundSessionId, text: trimmed })
+          if (result.payload?.code === 'channel-async') {
+            setChannel(result.payload)
+            setSyncNotice(t('syncRefused') + ' ' + String(result.payload.reasons?.[0] || ''))
+            return
+          }
+          if (!result.ok) { setSyncNotice(String(result.payload?.error || ('HTTP ' + result.status))); return }
+          setSyncText(''); setSyncNotice(t('syncQueued'))
+          await loadLive()
+        } catch (failure) {
+          setSyncNotice(String(failure?.message || failure))
+        } finally { setSyncBusy(false) }
+      }
+
+      async function submitClose() {
+        if (closeBusy) return
+        if (!closeDraft.next.trim()) { setCloseNotice(t('closeNeedsNext')); return }
+        setCloseBusy(true); setCloseNotice('')
+        try {
+          const result = await postJsonStatus('/dsh-workbench/api/close', {
+            next: closeDraft.next,
+            outcome: closeDraft.outcome,
+            decision: closeDraft.decision,
+            title: closeDraft.title,
+            runId: latestRun?.runId || '',
+          })
+          if (!result.ok) { setCloseNotice(String(result.payload?.error || ('HTTP ' + result.status))); return }
+          setCloseDraft({ next: '', outcome: 'yellow', decision: '', title: '' })
+          setCloseNotice(t('closeDone'))
+          await load()
+        } catch (failure) {
+          setCloseNotice(String(failure?.message || failure))
+        } finally { setCloseBusy(false) }
+      }
+
+      async function bindProject() {
+        if (!boundSessionId) { setMomentNotice(t('sessionMissing')); return }
+        try {
+          await postJson('/dsh-workbench/api/memory', { sessionId: boundSessionId })
+          setMomentNotice(t('memoryActivateDone'))
+          await load()
+        } catch (failure) { setMomentNotice(String(failure?.message || failure)) }
       }
 
       const latestRun = runs[0] || null
@@ -725,6 +882,24 @@ window.__ModuleLoader__.load({
       const execution = data?.execution || {}
       const canDispatch = Boolean(execution.controller && execution.enabled)
       const live = runs.some(item => item && item.status === 'running')
+      const memoryPayload = data?.memory || null
+      const memory = memoryPayload?.memory || null
+      const gapOpen = Boolean(memory?.gap?.open)
+      const sessionActive = Boolean(liveState?.running)
+      const activeMoment = momentOverride || (live || sessionActive ? 'work' : gapOpen ? 'close' : 'attach')
+
+      // The working moment reads the current session's own progress; the attach
+      // moment asks the Host which channel a task belongs to before any click.
+      React.useEffect(() => {
+        if (activeMoment !== 'work' || !boundSessionId) return undefined
+        loadLive()
+        const timer = setInterval(() => { loadLive() }, 5000)
+        return () => clearInterval(timer)
+      }, [activeMoment, boundSessionId])
+      React.useEffect(() => {
+        const timer = setTimeout(() => { decideChannel(syncText) }, 350)
+        return () => clearTimeout(timer)
+      }, [syncText])
       const statusLabel = status => status === 'running' ? t('running')
         : status === 'done' ? t('done')
           : status === 'cancelled' ? t('cancelled')
@@ -737,24 +912,31 @@ window.__ModuleLoader__.load({
 
       const bar = h('header', { className: 'wb-bar' },
         h('div', { className: 'wb-bar-left' },
-          h('span', { className: 'wb-dot', 'data-state': live ? 'running' : 'idle', 'aria-hidden': true }),
+          h('span', { className: 'wb-dot', 'data-state': live || sessionActive ? 'running' : 'idle', 'aria-hidden': true }),
           h('strong', { className: 'wb-bar-title' }, t('title')),
-          h('span', { className: 'wb-muted' }, execution.cwd || '')),
+          memoryPayload?.name ? h('span', { className: 'wb-muted' }, String(memoryPayload.name)) : null),
         h('div', { className: 'wb-bar-right' },
           h('span', { className: 'wb-chip' }, canDispatch ? t('execOn') : t('execOff')),
           h('button', { className: 'wb-button', type: 'button', onClick: load, disabled: busy }, busy ? t('loading') : t('refresh'))))
 
-      const tabButton = (id, label) => h('button', {
-        className: 'wb-tab', type: 'button', role: 'tab',
-        'data-tab': id, 'data-active': tab === id ? 'true' : 'false',
-        'aria-selected': tab === id,
-        onClick: () => setTab(id),
+const momentButton = (id, label) => h('button', {
+        className: 'wb-moment', type: 'button',
+        'data-moment': id, 'data-active': activeMoment === id ? 'true' : 'false',
+        'aria-pressed': activeMoment === id,
+        title: t('momentHint'),
+        onClick: () => setMomentOverride(id),
       }, label)
 
-      const tabs = h('div', { className: 'wb-tabs', role: 'tablist' },
-        tabButton('run', t('tabRun')), tabButton('task', t('tabTask')),
-        tabButton('history', t('tabHistory')), tabButton('workspace', t('tabWorkspace')),
-        tabButton('canvas', t('tabCanvas')))
+      const moments = h('div', { className: 'wb-moments', role: 'group', 'aria-label': t('momentHint') },
+        momentButton('attach', t('momentAttach')),
+        momentButton('work', t('momentWork')),
+        momentButton('close', t('momentClose')),
+        momentOverride
+          ? h('button', {
+            className: 'wb-moment wb-moment-reset', type: 'button', title: t('momentHint'),
+            onClick: () => setMomentOverride(''),
+          }, '↺')
+          : null)
 
       // ---- run tab -----------------------------------------------------------
       const runMeta = run => [
@@ -1137,6 +1319,123 @@ window.__ModuleLoader__.load({
                 plainRuns.length > 3 && h('div', { className: 'wb-note' }, String(t('canvasMoreRuns')).replace('{n}', String(plainRuns.length - 3))))))
           : null)
 
+const memoryCard = h('section', { className: 'wb-card wb-memory' },
+        h('div', { className: 'wb-card-head' },
+          h('h2', { style: { margin: 0 } }, t('memoryTitle')),
+          memoryPayload?.name ? h('span', { className: 'wb-chip' }, String(memoryPayload.name)) : null),
+        memoryPayload?.root ? h('div', { className: 'wb-note wb-mono' }, t('memoryRoot') + ' ' + String(memoryPayload.root)) : null,
+        memory ? h('div', { style: { marginTop: 8 } },
+          h('div', { className: 'wb-mainline' }, String(memory.mainline || t('noData'))),
+          memory.stopped_at ? h('div', { className: 'wb-row' }, h('b', null, t('stopped') + ': '), String(memory.stopped_at)) : null,
+          asList(memory.next).length
+            ? h('div', { className: 'wb-row' }, h('b', null, t('next') + ':'),
+              h('ul', null, asList(memory.next).map((item, index) => h('li', { key: index }, item))))
+            : null,
+          gapOpen ? h('div', { className: 'wb-note wb-warn-note' }, h('b', null, t('memoryGapOpen') + '：'), String(memory.gap?.note || memory.gapNote || '')) : null,
+          memory.closedAt ? h('div', { className: 'wb-note' }, t('updated') + ' ' + formatClock(memory.closedAt)) : h('div', { className: 'wb-note' }, t('memoryEmpty')))
+          : h('div', { className: 'wb-note' }, t('memoryEmpty')),
+        h('div', { className: 'wb-actions', style: { justifyContent: 'flex-end' } },
+          boundSessionId
+            ? h('button', { className: 'wb-button', type: 'button', onClick: bindProject }, t('memoryActivate'))
+            : h('span', { className: 'wb-note' }, t('sessionMissing'))))
+
+      const channelChip = channel
+        ? h('span', {
+          className: 'wb-chip', 'data-channel': channel.channel,
+          title: Array.isArray(channel.reasons) ? channel.reasons.join('\n') : '',
+        }, channel.channel === 'sync' ? t('channelSync') : t('channelAsync'))
+        : null
+
+      const syncBox = h('section', { className: 'wb-card wb-sync' },
+        h('h2', null, t('syncTitle')),
+        h('div', { className: 'wb-field' },
+          h('textarea', {
+            id: 'wb-sync-text', value: syncText, placeholder: t('syncPlaceholder'),
+            onChange: event => setSyncText(event.target.value),
+          })),
+        h('div', { className: 'wb-channel' },
+          channelChip,
+          channel && Array.isArray(channel.reasons) && channel.reasons.length
+            ? h('span', { className: 'wb-note' }, String(channel.reasons[0]))
+            : null),
+        syncNotice ? h('div', { className: 'wb-note' }, syncNotice) : null,
+        h('div', { className: 'wb-actions', style: { justifyContent: 'flex-end' } },
+          h('button', {
+            className: 'wb-button wb-button-primary', type: 'button', onClick: submitSync,
+            disabled: syncBusy || !syncText.trim() || channel?.channel === 'async',
+          }, syncBusy ? t('syncBusy') : t('syncGo'))))
+
+      const liveCard = h('section', { className: 'wb-card wb-live' },
+        h('div', { className: 'wb-card-head' },
+          h('h2', { style: { margin: 0 } }, t('liveTitle')),
+          h('span', { className: 'wb-chip', 'data-status': sessionActive ? 'running' : 'idle' }, sessionActive ? t('liveRunning') : t('liveIdle'))),
+        boundSessionId
+          ? h('div', { className: 'wb-note wb-mono' }, boundSessionId)
+          : h('div', { className: 'wb-note' }, t('sessionMissing')),
+        liveState
+          ? h('div', { className: 'wb-metrics' },
+            h('div', null, h('b', null, String(liveState.steps)), ' ' + t('steps')),
+            h('div', null, h('b', null, String(liveState.toolCalls)), ' ' + t('toolCalls')),
+            liveState.waiting ? h('div', { className: 'wb-chip wb-warn' }, t('waiting')) : null)
+          : null,
+        liveState && liveState.lastText
+          ? h('details', { className: 'wb-prompt' }, h('summary', null, t('rawReply')), h('pre', { className: 'wb-report-raw' }, String(liveState.lastText)))
+          : null)
+
+      const closeForm = h('section', { className: 'wb-card wb-close' },
+        h('h2', null, t('closeTitle')),
+        closeNotice ? h('div', { className: 'wb-note' }, closeNotice) : null,
+        h('div', { className: 'wb-field' },
+          h('label', { htmlFor: 'wb-close-next' }, t('closeNext')),
+          h('textarea', {
+            id: 'wb-close-next', value: closeDraft.next, placeholder: t('next'),
+            onChange: event => setCloseDraft({ ...closeDraft, next: event.target.value }),
+          })),
+        h('div', { className: 'wb-field' },
+          h('label', { htmlFor: 'wb-close-outcome' }, t('closeOutcome')),
+          h('select', {
+            id: 'wb-close-outcome', value: closeDraft.outcome,
+            onChange: event => setCloseDraft({ ...closeDraft, outcome: event.target.value }),
+          },
+            h('option', { value: 'green' }, t('outcomeGreen')),
+            h('option', { value: 'yellow' }, t('outcomeYellow')),
+            h('option', { value: 'red' }, t('outcomeRed')))),
+        h('div', { className: 'wb-field' },
+          h('label', { htmlFor: 'wb-close-title' }, t('closeDecisionTitle')),
+          h('input', {
+            id: 'wb-close-title', value: closeDraft.title,
+            onChange: event => setCloseDraft({ ...closeDraft, title: event.target.value }),
+          })),
+        h('div', { className: 'wb-field' },
+          h('label', { htmlFor: 'wb-close-decision' }, t('closeDecision')),
+          h('textarea', {
+            id: 'wb-close-decision', value: closeDraft.decision, placeholder: t('closeDecisionPlaceholder'),
+            onChange: event => setCloseDraft({ ...closeDraft, decision: event.target.value }),
+          })),
+        h('div', { className: 'wb-actions', style: { justifyContent: 'flex-end' } },
+          h('button', {
+            className: 'wb-button wb-button-primary', type: 'button', onClick: submitClose,
+            disabled: closeBusy || !closeDraft.next.trim(),
+          }, closeBusy ? t('closeBusy') : t('closeSubmit'))))
+
+      const attachBody = h('div', null,
+        memoryCard,
+        syncBox,
+        channel?.channel === 'async'
+          ? h('div', null, taskView)
+          : h('details', { className: 'wb-prompt wb-details' }, h('summary', null, t('moreLongJobs')), taskView),
+        h('details', { className: 'wb-prompt wb-details' }, h('summary', null, t('continuity')), continuity))
+
+      const workBody = h('div', null,
+        liveCard,
+        runCard,
+        h('details', { className: 'wb-prompt wb-details' }, h('summary', null, t('moreCanvas')), canvasView))
+
+      const closeBody = h('div', null,
+        closeForm,
+        historyView,
+        h('details', { className: 'wb-prompt wb-details' }, h('summary', null, t('memoryDecisions')), decisionsView))
+
       let body
       if (error) {
         body = h('section', { className: 'wb-card wb-error-card', role: 'alert' },
@@ -1144,37 +1443,48 @@ window.__ModuleLoader__.load({
           h('button', { className: 'wb-button', type: 'button', onClick: load }, t('retry')))
       } else if (!data) {
         body = h('section', { className: 'wb-card' }, h('div', { className: 'wb-empty' }, t('loading')))
-      } else if (tab === 'task') {
-        body = taskView
-      } else if (tab === 'history') {
-        body = historyView
-      } else if (tab === 'workspace') {
-        body = workspaceView
-      } else if (tab === 'canvas') {
-        body = canvasView
+      } else if (activeMoment === 'work') {
+        body = workBody
+      } else if (activeMoment === 'close') {
+        body = closeBody
       } else {
-        body = runCard
+        body = attachBody
       }
 
-      return h('div', { className: 'wb-page' }, h('style', null, CSS), h('div', { className: 'wb-wrap' }, bar, tabs, body))
+      return h('div', { className: 'wb-page' }, h('style', null, CSS),
+        h('div', { className: 'wb-wrap' }, bar, moments, momentNotice ? h('div', { className: 'wb-note' }, momentNotice) : null, body))
     }
 
+    // The workbench is a right-column tab, not a main panel: it belongs to the
+    // conversation it is attached to and must never replace the chat column.
+    const WORKBENCH_TYPE = 'dsh-workbench/workbench'
+    const WORKBENCH_KIND = 'workbench'
+
     return {
-      inject: ['slots', 'locale'],
+      inject: ['slots', 'locale', 'sidebarRightTabs'],
       apply(ctx) {
         ctx.effect(() => ctx.locale.register('dshWorkbench', { en, zh }), 'dsh-workbench locales')
         const t = ctx.locale.bind('dshWorkbench')
-        ctx.slots.inject('main', () => ctx.slots.register({ name: 'main', key: 'dsh-workbench' }, props => h(WorkbenchPanel, { ...props, t })))
-        ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
-          name: 'sidebar.panellist', id: 'dsh-workbench', order: 25,
-          label: () => t('title'),
-        }, ({ size, active }) => h('svg', {
-          width: size, height: size, viewBox: '0 0 24 24', fill: 'none',
-          'aria-hidden': true, style: { display: 'block', opacity: active ? 1 : .78 },
-        },
-          h('rect', { x: 3, y: 4, width: 18, height: 16, rx: 3, stroke: 'currentColor', strokeWidth: 1.7 }),
-          h('path', { d: 'M7 8h10M7 12h6M7 16h8', stroke: 'currentColor', strokeWidth: 1.7, strokeLinecap: 'round' })))
-        )
+        ctx.effect(() => ctx.sidebarRightTabs.register({
+          id: WORKBENCH_TYPE,
+          kind: WORKBENCH_KIND,
+          priority: 'extension',
+          title: () => t('title'),
+          guide: [{
+            id: 'workbench',
+            order: 30,
+            title: () => t('title'),
+            description: () => t('guideDescription'),
+          }],
+        }), 'dsh-workbench: tab type')
+        ctx.effect(() => ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register({
+          name: 'sidebar.right.pane.tab',
+          key: WORKBENCH_TYPE,
+          locale: 'dshWorkbench',
+          // The slot tells a session-scoped body which session it renders, so
+          // sync work knows where it belongs without guessing from the URL.
+          inject: sessionId => ({ sessionId }),
+        }, props => h(WorkbenchPanel, { ...props, t }))), 'dsh-workbench: tab body')
         return () => {}
       },
     }

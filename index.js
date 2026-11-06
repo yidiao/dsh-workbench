@@ -75,6 +75,10 @@ const MAX_AUDIT_ENTRIES = 400
 const API_PATH = '/dsh-workbench/api/state-v2'
 
 const MEMORY_API_PATH = '/dsh-workbench/api/memory'
+const CHANNEL_API_PATH = '/dsh-workbench/api/channel'
+const SYNC_API_PATH = '/dsh-workbench/api/sync'
+const LIVE_API_PATH = '/dsh-workbench/api/live'
+const CLOSE_API_PATH = '/dsh-workbench/api/close'
 const MODELS_API_PATH = '/dsh-workbench/api/models'
 const STATE_EDIT_API_PATH = '/dsh-workbench/api/state-edit'
 const DECISION_API_PATH = '/dsh-workbench/api/decision-add'
@@ -1083,6 +1087,45 @@ function isLoopbackReq(req) {
   return hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '::1'
 }
 
+// The v1.0 channel rule, hard-coded on purpose: a rule a user cannot see is a
+// rule they cannot trust, and a rule with no numbers is a rule nobody can check.
+// Sync = short work stays in the session already open, so history, approvals and
+// context remain in one place. Async = dispatch to a child session.
+const SYNC_MAX_MINUTES = 2
+const ASYNC_TEXT_SIGNALS = [
+  [/(生成|生|画|出|做)[^，。！？\n]{0,6}(图|封面|插画|海报|视频|片子|动画)/, '要外部生成（图/视频）'],
+  [/(批量|全库|全量|扫描全部|遍历所有)/, '批量作业，可能超过几分钟'],
+  [/(重构|迁移|移植|重写)/, '大改，需要独立会话慢慢做'],
+  [/(跑测试|全量测试|构建|打包|部署|build|deploy)/, '要跑外部命令/流程'],
+  [/(等回复|等审批|等对方|定时|明天再看)/, '要等外部资源'],
+]
+
+function channelFor(input = {}) {
+  const text = String(input.text || '')
+  const minutes = Number(input.minutes)
+  const reasons = []
+  let channel = 'sync'
+  const toAsync = reason => {
+    if (channel !== 'async') { channel = 'async'; reasons.length = 0 }
+    reasons.push(reason)
+  }
+  if (Number.isFinite(minutes) && minutes > SYNC_MAX_MINUTES) toAsync(`预计 ${minutes} 分钟，超过 ${SYNC_MAX_MINUTES} 分钟上限`)
+  if (input.needsGeneration === true) toAsync('需要外部生成（图/视频）')
+  if (input.external === true) toAsync('要等外部资源')
+  if (input.leaving === true) toAsync('你要离开，需要独立会话继续')
+  for (const [pattern, reason] of ASYNC_TEXT_SIGNALS) {
+    const hit = pattern.exec(text)
+    if (hit) toAsync(`文字里有长活信号「${hit[0]}」：${reason}`)
+  }
+  if (channel === 'sync') {
+    reasons.push(minutes ? `预计 ${minutes} 分钟，不超过 ${SYNC_MAX_MINUTES} 分钟` : `不超过 ${SYNC_MAX_MINUTES} 分钟的短活`)
+    reasons.push('留在当前会话里接着做：同一个会话、同一段历史')
+  } else {
+    reasons.push(`改为派一条长活（独立会话），当前会话不被长时间占用`)
+  }
+  return { channel, reasons, maxMinutes: SYNC_MAX_MINUTES, decidedAt: new Date().toISOString() }
+}
+
 function statePayload(ctx) {
   // state.json used to be a third source of truth next to state.md and the
   // panel. It is now derived: the JSON memory record is the only writer.
@@ -1416,6 +1459,175 @@ export async function apply(ctx) {
       writeProjects(projects)
       appendAudit({ action: 'memory.activate', requestId: requestId(input.requestId), summary: project.key + ' ' + project.root })
       sendJson(res, 200, { ...memoryPayload(), activated: project.key })
+    },
+  }))
+
+// v1.0 flow: one hard-coded rule about where work runs, the route that acts on
+  // its sync side, one live view of the current session, and one close-out write.
+  disposers.push(ctx.webServer.register({
+    kind: 'exact',
+    path: CHANNEL_API_PATH,
+    handler: async (req, res) => {
+      if (!guard(req, res, 'POST')) return
+      const body = await readJsonBody(req)
+      if (body.tooLarge) { sendJson(res, 413, { ok: false, error: '请求体过大' }); return }
+      if (body.error) { sendJson(res, 400, { ok: false, error: '请求体不是合法 JSON 对象' }); return }
+      const input = body.json
+      const text = normaliseText(input.text, 4000)
+      if (text === INVALID) { sendJson(res, 400, { ok: false, error: '字段类型或长度不合法' }); return }
+      sendJson(res, 200, { ok: true, ...channelFor({ ...input, text: text || '' }) })
+    },
+  }))
+
+  // Sync work happens in the session the user is already looking at: the prompt
+  // is queued into it, so history, approvals and context stay in one place. The
+  // channel rule is enforced here, not only in the panel.
+  disposers.push(ctx.webServer.register({
+    kind: 'exact',
+    path: SYNC_API_PATH,
+    handler: async (req, res) => {
+      if (!guard(req, res, 'POST')) return
+      const body = await readJsonBody(req)
+      if (body.tooLarge) { sendJson(res, 413, { ok: false, error: '请求体过大' }); return }
+      if (body.error) { sendJson(res, 400, { ok: false, error: '请求体不是合法 JSON 对象' }); return }
+      const input = body.json
+      const sessionId = normaliseText(input.sessionId, 120)
+      const text = normaliseText(input.text, 4000)
+      if (sessionId === INVALID || text === INVALID) { sendJson(res, 400, { ok: false, error: '字段类型或长度不合法' }); return }
+      if (!sessionId) { sendJson(res, 400, { ok: false, error: '缺少 sessionId：同步执行只发生在某个具体会话里' }); return }
+      if (!text) { sendJson(res, 400, { ok: false, error: 'text 不能为空' }); return }
+      const decision = channelFor({ ...input, text })
+      if (decision.channel !== 'sync') {
+        sendJson(res, 409, { ok: false, code: 'channel-async', ...decision })
+        return
+      }
+      const controller = serviceGet(ctx, 'sessionController')
+      if (!controller || typeof controller.prompt !== 'function') {
+        sendJson(res, 501, { ok: false, code: 'unsupported', error: '当前 profile 未提供 sessionController' })
+        return
+      }
+      const sessions = serviceGet(ctx, 'sessions')
+      if (sessions && typeof sessions.get === 'function' && !sessions.get(sessionId)) {
+        sendJson(res, 404, { ok: false, code: 'unknown-session', error: '找不到该会话，可能已被关闭' })
+        return
+      }
+      const requestId = newRunId()
+      const admission = new AbortController()
+      try {
+        const ack = await controller.prompt({
+          sessionId,
+          requestId,
+          mode: 'queue',
+          content: [{ type: 'text', text }],
+        }, admission.signal)
+        const accepted = ack?.accepted === true || ack?.value?.accepted === true
+        if (!accepted) throw new Error('sessionController.prompt 未被接受')
+      } catch (error) {
+        appendAudit({ action: 'sync.failed', requestId, summary: String(error?.message || error).slice(0, 160) })
+        sendJson(res, 502, { ok: false, code: 'prompt-failed', error: String(error?.message || error) })
+        return
+      }
+      appendAudit({ action: 'sync.prompt', requestId, summary: text.slice(0, 120) })
+      sendJson(res, 200, {
+        ok: true,
+        sessionId,
+        requestId,
+        channel: 'sync',
+        reasons: decision.reasons,
+        acceptedAt: new Date().toISOString(),
+      })
+    },
+  }))
+
+  // The current session's own progress, so the "working" moment can show sync
+  // work without pretending it is a dispatch.
+  disposers.push(ctx.webServer.register({
+    kind: 'exact',
+    path: LIVE_API_PATH,
+    handler: async (req, res) => {
+      if (!guard(req, res, 'GET')) return
+      const url = new URL(String(req.url || ''), 'http://127.0.0.1')
+      const sessionId = String(url.searchParams.get('sessionId') || '').slice(0, 120)
+      if (!sessionId) { sendJson(res, 400, { ok: false, error: '缺少 sessionId' }); return }
+      const events = sessionEventsOf(ctx, sessionId)
+      const progress = runProgress(events) || {}
+      let running = false
+      try {
+        const controller = serviceGet(ctx, 'sessionController')
+        const listed = controller && typeof controller.list === 'function' ? await controller.list() : null
+        const items = Array.isArray(listed) ? listed : (listed?.value?.items ?? listed?.items ?? [])
+        running = Boolean(items.find(item => item && item.sessionId === sessionId)?.running)
+      } catch { running = false }
+      const reply = lastAssistantText(ctx, sessionId)
+      sendJson(res, 200, {
+        ok: true,
+        sessionId,
+        running,
+        steps: Number(progress.steps) || 0,
+        toolCalls: Number(progress.toolCalls) || 0,
+        messages: Number(progress.messages) || 0,
+        waiting: running ? Boolean(progress.waiting) : false,
+        activityAt: Number(progress.activityAt) || 0,
+        lastText: String(reply || '').slice(0, 2000),
+        turnEnd: lastTurnEndKind(events) || '',
+        fetchedAt: new Date().toISOString(),
+      })
+    },
+  }))
+
+  // One close-out write: next step + outcome colour + decision. It is the same
+  // record wb_close writes, so the panel and the agent never disagree.
+  disposers.push(ctx.webServer.register({
+    kind: 'exact',
+    path: CLOSE_API_PATH,
+    handler: async (req, res) => {
+      if (!guard(req, res, 'POST')) return
+      const body = await readJsonBody(req)
+      if (body.tooLarge) { sendJson(res, 413, { ok: false, error: '请求体过大' }); return }
+      if (body.error) { sendJson(res, 400, { ok: false, error: '请求体不是合法 JSON 对象' }); return }
+      const input = body.json
+      const next = normaliseList(input.next, 3, 500)
+      const outcome = normaliseText(input.outcome, 20)
+      const decision = normaliseText(input.decision, 4000)
+      const title = normaliseText(input.title, 90)
+      const runId = normaliseText(input.runId, 80)
+      if (next === INVALID || outcome === INVALID || decision === INVALID || title === INVALID || runId === INVALID) {
+        sendJson(res, 400, { ok: false, error: '字段类型或长度不合法' })
+        return
+      }
+      if (!Array.isArray(next) || !next.length) {
+        sendJson(res, 400, { ok: false, error: 'next 不能为空：收工必须说清下次的第一步' })
+        return
+      }
+      if (outcome && !['green', 'yellow', 'red'].includes(outcome)) {
+        sendJson(res, 400, { ok: false, error: 'outcome 只能是 green / yellow / red' })
+        return
+      }
+      const project = activeProject()
+      if (!project.ok) { sendJson(res, 503, { ok: false, error: project.error || '项目不可用' }); return }
+      const stamp = new Date().toISOString()
+      const memory = { ...project.memory }
+      memory.next = next.slice(0, 3)
+      memory.closedAt = stamp
+      if (outcome) memory.outcome = outcome
+      if (runId) memory.basis = { ...memory.basis, runId }
+      if (decision) appendDecision(memory, { text: decision, title: title || '' })
+      const saved = saveMemory(memory, { updatedAt: stamp })
+      appendAudit({
+        action: 'memory.close',
+        requestId: requestId(input.requestId),
+        summary: (outcome || 'no-outcome') + ' ' + String(next[0] || '').slice(0, 80),
+      })
+      sendJson(res, 200, {
+        ok: true,
+        closedAt: stamp,
+        outcome: memory.outcome || '',
+        next: memory.next,
+        decisionAppended: Boolean(decision),
+        project: { key: project.key, root: project.root, name: saved.memory.name },
+        agents: saved.agents,
+        gap: memoryGap(saved.memory),
+      })
     },
   }))
 

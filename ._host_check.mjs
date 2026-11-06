@@ -945,6 +945,105 @@ console.log('dispatch:', run.runId, '| session:', run.sessionId, '| dry-run ok |
 console.log('dispatch guards: 405/400/401/403 enforced')
 console.log('audit actions:', dispatchActions.slice(0, 6).join(', '))
 
+// --- v1.0 flow: channel rule, sync route, live view, close-out write --------
+const channelRoute = registered.find(r => r.regType === 'web' && r.path === '/dsh-workbench/api/channel')
+const syncRoute = registered.find(r => r.regType === 'web' && r.path === '/dsh-workbench/api/sync')
+const liveRoute = registered.find(r => r.regType === 'web' && r.path === '/dsh-workbench/api/live')
+const closeRoute = registered.find(r => r.regType === 'web' && r.path === '/dsh-workbench/api/close')
+if (!channelRoute || !syncRoute || !liveRoute || !closeRoute) fail('v1.0 flow routes missing')
+
+const shortRes = response()
+await channelRoute.handler(postReq(channelRoute.path, { text: '把刚写的模块标题改一下' }), shortRes)
+if (shortRes.statusCode !== 200) fail('channel status ' + shortRes.statusCode + ' ' + shortRes.body)
+const shortDecision = JSON.parse(shortRes.body)
+if (shortDecision.channel !== 'sync' || shortDecision.maxMinutes !== 2) fail('short work must be sync: ' + shortRes.body)
+
+const genRes = response()
+await channelRoute.handler(postReq(channelRoute.path, { text: '帮我生一张封面图' }), genRes)
+const genDecision = JSON.parse(genRes.body)
+if (genDecision.channel !== 'async' || !genDecision.reasons.some(reason => reason.includes('外部生成'))) {
+  fail('generation must be async: ' + genRes.body)
+}
+
+const minutesRes = response()
+await channelRoute.handler(postReq(channelRoute.path, { text: '整理一下', minutes: 9 }), minutesRes)
+if (JSON.parse(minutesRes.body).channel !== 'async') fail('9 minutes must be async')
+
+const leavingRes = response()
+await channelRoute.handler(postReq(channelRoute.path, { text: '先做一步', leaving: true }), leavingRes)
+if (JSON.parse(leavingRes.body).channel !== 'async') fail('leaving must be async')
+
+const noSessionRes = response()
+await syncRoute.handler(postReq(syncRoute.path, { text: '改个标题' }), noSessionRes)
+if (noSessionRes.statusCode !== 400) fail('sync accepted no sessionId')
+
+sessionRunning = true
+const asyncRefusedRes = response()
+await syncRoute.handler(postReq(syncRoute.path, { sessionId: createdSessionId, text: '帮我生一段视频' }), asyncRefusedRes)
+if (asyncRefusedRes.statusCode !== 409 || JSON.parse(asyncRefusedRes.body).code !== 'channel-async') {
+  fail('sync route did not enforce the channel rule: ' + asyncRefusedRes.statusCode + ' ' + asyncRefusedRes.body)
+}
+
+const promptsBefore = dispatchCalls.prompt.length
+const syncOkRes = response()
+await syncRoute.handler(postReq(syncRoute.path, { sessionId: createdSessionId, text: '把那段话改短一点' }), syncOkRes)
+if (syncOkRes.statusCode !== 200) fail('sync status ' + syncOkRes.statusCode + ' ' + syncOkRes.body)
+const syncResult = JSON.parse(syncOkRes.body)
+const lastSyncPrompt = dispatchCalls.prompt[dispatchCalls.prompt.length - 1]
+if (dispatchCalls.prompt.length !== promptsBefore + 1) fail('sync did not prompt')
+if (lastSyncPrompt.sessionId !== createdSessionId || lastSyncPrompt.mode !== 'queue') {
+  fail('sync did not queue into the current session: ' + JSON.stringify(lastSyncPrompt))
+}
+if (!String(lastSyncPrompt.content?.[0]?.text || '').includes('把那段话改短一点')) fail('sync prompt text missing')
+if (syncResult.channel !== 'sync' || !syncResult.requestId) fail('sync result ' + syncOkRes.body)
+
+const ghostRes = response()
+await syncRoute.handler(postReq(syncRoute.path, { sessionId: 'sess-does-not-exist', text: '改个标题' }), ghostRes)
+if (ghostRes.statusCode !== 404) fail('sync accepted an unknown session')
+
+const liveRes = response()
+await liveRoute.handler(getReq(liveRoute.path + '?sessionId=' + createdSessionId), liveRes)
+if (liveRes.statusCode !== 200) fail('live status ' + liveRes.statusCode + ' ' + liveRes.body)
+const live = JSON.parse(liveRes.body)
+if (live.sessionId !== createdSessionId || live.running !== true) fail('live payload ' + liveRes.body)
+if (live.steps < 1 || live.toolCalls < 1 || !live.lastText.includes('完成')) fail('live progress ' + liveRes.body)
+const liveNoSession = response()
+await liveRoute.handler(getReq(liveRoute.path), liveNoSession)
+if (liveNoSession.statusCode !== 400) fail('live accepted no sessionId')
+sessionRunning = false
+const liveIdleRes = response()
+await liveRoute.handler(getReq(liveRoute.path + '?sessionId=' + createdSessionId), liveIdleRes)
+if (JSON.parse(liveIdleRes.body).running !== false) fail('live reported running after the session settled')
+
+const closeEmptyRes = response()
+await closeRoute.handler(postReq(closeRoute.path, { next: [] }), closeEmptyRes)
+if (closeEmptyRes.statusCode !== 400) fail('close accepted an empty next step')
+const closeColourRes = response()
+await closeRoute.handler(postReq(closeRoute.path, { next: '下一步', outcome: 'blue' }), closeColourRes)
+if (closeColourRes.statusCode !== 400) fail('close accepted a bad outcome colour')
+const closeOkRes = response()
+await closeRoute.handler(postReq(closeRoute.path, {
+  next: '重启后按清单验收',
+  outcome: 'yellow',
+  title: '面板收工走这一条',
+  decision: '背景：面板收工要一次写完。决定：/api/close 与 wb_close 共用一条写入路径。',
+  runId: 'run_close_route_1',
+}), closeOkRes)
+if (closeOkRes.statusCode !== 200) fail('close status ' + closeOkRes.statusCode + ' ' + closeOkRes.body)
+const closedPayload = JSON.parse(closeOkRes.body)
+if (!closedPayload.closedAt || closedPayload.outcome !== 'yellow') fail('close payload ' + closeOkRes.body)
+if (closedPayload.gap?.open !== false) fail('close left the gap open: ' + closeOkRes.body)
+const closedRecord = JSON.parse(readFileSync(memoryFile, 'utf8'))
+if (closedRecord.outcome !== 'yellow' || closedRecord.basis.runId !== 'run_close_route_1') {
+  fail('close did not write the record: ' + closedRecord.outcome + ' ' + JSON.stringify(closedRecord.basis))
+}
+if (closedRecord.decisions[closedRecord.decisions.length - 1].title !== '面板收工走这一条') {
+  fail('close decision title ' + JSON.stringify(closedRecord.decisions[closedRecord.decisions.length - 1]))
+}
+const closedAgents = readFileSync(join(tempWorkspace, 'AGENTS.md'), 'utf8')
+if (!closedAgents.includes('重启后按清单验收')) fail('close did not regenerate the injected block')
+console.log('flow: short→sync, generation→async, minutes→async, leaving→async | sync queues into the current session | live running/idle | close writes one record')
+
 rmSync(tempRoot, { recursive: true, force: true })
 delete process.env.DSH_WORKBENCH_DIR
 console.log('\nHOST HARNESS PASS')

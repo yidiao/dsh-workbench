@@ -1,7 +1,7 @@
 {
   "name": "dsh-workbench",
-  "version": "0.9.0",
-  "description": "工作区指挥台：按项目分开的记忆（JSON 真源 + 生成的 AGENTS.md 段落，会话一开始就能被模型读到）、五个标签页回答五件事、可复用模块装配成模板一键复用、运行记录先消化成结论报告、画布只读展示真实关系。",
+  "version": "0.10.0",
+  "description": "Workbench for DeepSeek Harness: a session-scoped right-sidebar tab with three auto-selected moments (attach / working / close out), per-project memory injected as a generated AGENTS.md block, and two execution channels decided by the host.",
   "keywords": [
     "deepseek-harness",
     "dsh",

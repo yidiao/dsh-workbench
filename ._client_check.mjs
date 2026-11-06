@@ -1,8 +1,13 @@
-// Headless harness for the CLIENT bundle (client.js), v0.6.
-// Proves: the four tabs really switch the rendered subtree, the task tab can be
-// assembled from a saved module and targets a chosen session, the history tab
-// paints a derived report with the raw record folded away, and the workspace tab
-// carries continuity / decision cards / audit timeline / real metrics.
+// Headless harness for the CLIENT bundle (client.js), v1.0.
+// Proves the shape the flow work depends on:
+//   1. the panel is a RIGHT-COLUMN tab (no main panel, no panellist icon), so it
+//      cannot take the chat column, and it is told which session it renders;
+//   2. the moment is derived from data (live run → working; unclosed gap →
+//      close out; else attach) and each moment paints one job;
+//   3. sync work queues into the bound session through the flow routes, and the
+//      channel rule is visible before the click;
+//   4. the close-out form writes one record through /api/close;
+//   5. the reused views (composer, report, decisions, canvas) still render.
 
 let captured = null
 globalThis.window = { __ModuleLoader__: { load: (spec) => { captured = spec } } }
@@ -13,6 +18,7 @@ const h = (type, props, ...children) => ({
 
 let hookStates = []
 let hookIndex = 0
+let pendingCleanups = []
 const React = {
   createElement: h,
   useState: (init) => {
@@ -29,11 +35,45 @@ const React = {
     if (!(index in hookStates)) hookStates[index] = { current: init }
     return hookStates[index]
   },
-  useEffect: (fn) => { try { fn() } catch {} },
+  useEffect: (fn) => {
+    const cleanup = fn()
+    if (typeof cleanup === 'function') pendingCleanups.push(cleanup)
+  },
 }
 
-const payloads = {
-  '/dsh-workbench/api/state-v2': {
+// --- mock Host -------------------------------------------------------------
+let sessionRunning = true
+let memoryGapOpen = false
+const requests = []
+const reports = {
+  run_A: {
+    ok: true, derived: true, note: '机器摘要：与原文不一致时以原文为准。',
+    run: {
+      runId: 'run_A', goal: '统计 md 行数 top3', status: 'running', model: 'deepseek-flash',
+      sessionId: 'session-aaa', sessionMode: 'new', cwd: 'D:/AI Pj', plan: '', instruction: '', waiting: false,
+    },
+    conclusion: '这一轮还没有产出结论（运行中）。',
+    points: [], artifacts: [], pending: [],
+    stats: { durationMs: 1000, steps: 6, toolCalls: 11, messages: 0 },
+    reply: '',
+  },
+  run_B: {
+    ok: true, derived: true, note: '机器摘要：与原文不一致时以原文为准。',
+    run: {
+      runId: 'run_B', goal: '上一条已完成的任务', status: 'done', model: 'deepseek-flash',
+      sessionId: 'session-bbb', sessionMode: 'new', cwd: 'D:/AI Pj', plan: '步骤B', instruction: '注意B', waiting: false,
+    },
+    conclusion: '结论：行数统计完成。',
+    points: ['记录 72 行', 'top3 已列出'],
+    artifacts: ['D:/AI Pj/_workbench/out/result.md'],
+    pending: [],
+    stats: { durationMs: 100000, steps: 2, toolCalls: 1, messages: 2 },
+    reply: '原始回复正文：全部完成。',
+  },
+}
+
+function statePayload() {
+  return {
     ok: true,
     state: {
       mainline: '测试主线',
@@ -42,18 +82,52 @@ const payloads = {
       red_lines: ['不绕过权限'],
       updated: '2026-10-31T00:00:00.000Z',
     },
-    decisions: '### 2026-10-31T00:00:00.000Z\n面板改成标签页\n背景：所有功能挤在一屏\n决定：运行/任务/历史/工作区\n代价：需要多点一次',
+    decisions: '### 2026-10-31T00:00:00.000Z\n面板改成三时刻\n背景：五个标签谁都不知道该点哪个\n决定：接上/在做/收工\n代价：要按数据自动判时刻',
     tasks: [{ id: 'T-001', status: '绿', goal: '测试任务' }],
     ledger: { rows: [], totalTokens: 0, greenCards: 1 },
     execution: { enabled: true, cwd: 'D:/workspace', controller: true },
+    memory: {
+      ok: true,
+      active: 'abc123',
+      root: 'D:/AI Pj/_workbench',
+      name: '_workbench',
+      memory: {
+        key: 'abc123', name: '_workbench', root: 'D:/AI Pj/_workbench',
+        mainline: 'v1.0：会话接续层 + 装配层', stopped_at: 'Phase A 已提交',
+        next: ['Phase B 面板进右栏'], red_lines: ['判断不下放'], decisions: [],
+        outcome: '', openedAt: '2026-11-06T10:00:00.000Z', closedAt: '2026-11-06T11:05:00.000Z',
+        gap: { open: memoryGapOpen, finishedAfterClose: memoryGapOpen ? 2 : 0, note: memoryGapOpen ? '其后还有 2 次运行完成' : '' },
+      },
+    },
     fetchedAt: '2026-10-31T00:00:00.000Z',
-  },
-  '/dsh-workbench/api/runs': {
+  }
+}
+
+globalThis.fetch = async (raw, options) => {
+  const path = String(raw).split('?')[0]
+  const body = options?.body ? JSON.parse(options.body) : null
+  requests.push({ path, url: String(raw), method: options?.method || 'GET', body })
+  const ok = (payload, status = 200) => ({ ok: status >= 200 && status < 300, status, json: async () => payload })
+
+  if (path === '/dsh-workbench/api/state-v2') return ok(statePayload())
+  if (path === '/dsh-workbench/api/models') return ok({
+    ok: true, available: true,
+    groups: [{ id: 'deepseek-official', name: 'DeepSeek', models: [{ id: 'deepseek-flash', name: 'Flash' }] }],
+    current: { provider: 'deepseek-official', model: 'deepseek-flash' },
+  })
+  if (path === '/dsh-workbench/api/audit') return ok({
+    ok: true,
+    entries: [
+      { ts: '2026-10-31T10:00:03.000Z', action: 'dispatch.start', summary: 'session session-aaa · 统计 md 行数 top3' },
+      { ts: '2026-10-31T10:00:09.000Z', action: 'state.edit', summary: 'mainline' },
+    ],
+  })
+  if (path === '/dsh-workbench/api/runs') return ok({
     ok: true,
     items: [
       {
         runId: 'run_A', sessionId: 'session-aaa', goal: '统计 md 行数 top3',
-        model: 'deepseek-flash', status: 'running', cwd: 'D:/AI Pj',
+        model: 'deepseek-flash', status: sessionRunning ? 'running' : 'done', cwd: 'D:/AI Pj',
         createdAt: 1793944774996, updatedAt: 1793944774996, steps: 6, toolCalls: 11,
         orphaned: true,
       },
@@ -69,105 +143,64 @@ const payloads = {
         createdAt: 1793944000000, updatedAt: 1793944100000, reply: '上一次运行的回复正文',
       },
     ],
-  },
-  '/dsh-workbench/api/models': {
-    ok: true,
-    available: true,
-    groups: [{ id: 'deepseek-official', name: 'DeepSeek', models: [{ id: 'deepseek-flash', name: 'Flash' }] }],
-    current: { provider: 'deepseek-official', model: 'deepseek-flash' },
-  },
-  '/dsh-workbench/api/audit': {
-    ok: true,
-    entries: [
-      { ts: '2026-10-31T10:00:03.000Z', action: 'dispatch.start', summary: 'session session-aaa · 统计 md 行数 top3' },
-      { ts: '2026-10-31T10:00:09.000Z', action: 'state.edit', summary: 'mainline' },
-    ],
-  },
-  '/dsh-workbench/api/sessions': {
-    ok: true,
-    available: true,
+  })
+  if (path === '/dsh-workbench/api/sessions') return ok({
+    ok: true, available: true,
     items: [
-      { sessionId: 'session-aaa', title: '正在跑的会话', running: true, blank: false, updatedAt: 1793944774996 },
+      { sessionId: 'session-aaa', title: '正在跑的会话', running: sessionRunning, blank: false, updatedAt: 1793944774996 },
       { sessionId: 'session-ccc', title: '', running: false, blank: false, updatedAt: 1793944000000 },
     ],
-  },
-  '/dsh-workbench/api/modules': {
+  })
+  if (path === '/dsh-workbench/api/modules') return ok({
     ok: true,
     items: [{ id: 'mod_1', kind: 'goal', title: '统计行数模块', text: '模块正文：统计 md 行数并给出 top3', uses: 2 }],
-  },
-  '/dsh-workbench/api/templates': {
+  })
+  if (path === '/dsh-workbench/api/templates') return ok({
     ok: true,
     items: [{
       id: 'tpl_1', title: '行数巡检模板', goal: '模板目标：统计 md 行数 top3',
       plan: '模板计划：先扫描再排序', instruction: '模板指令：只读不改文件',
       moduleIds: ['mod_2'], model: 'deepseek-official/deepseek-flash', sessionMode: 'new', uses: 4,
     }],
-  },
-}
-
-const reports = {
-  run_A: {
-    ok: true, derived: true, note: '机器摘要：与原文不一致时以原文为准。',
-    run: {
-      runId: 'run_A', goal: '统计 md 行数 top3', status: 'running', model: 'deepseek-flash',
-      sessionId: 'session-aaa', sessionMode: 'new', cwd: 'D:/AI Pj', plan: '', instruction: '', waiting: false,
-    },
-    conclusion: '这一轮还没有产出结论（运行中）。',
-    points: [], artifacts: [], pending: [],
-    stats: { durationMs: 1000, steps: 6, toolCalls: 11, messages: 0 },
-    reply: '',
-  },
-  run_C: {
-    ok: true, derived: true, note: '机器摘要：与原文不一致时以原文为准。',
-    run: {
-      runId: 'run_C', goal: '裸派发的历史任务', status: 'done', model: 'deepseek-flash',
-      sessionId: 'session-ggg', sessionMode: 'new', cwd: 'D:/AI Pj', waiting: false,
-    },
-    conclusion: '裸派发结论',
-    points: [], artifacts: [], pending: [],
-    stats: { durationMs: 2000, steps: 2, toolCalls: 1, messages: 0 },
-    reply: '裸派发的回复',
-  },
-  run_B: {
-    ok: true, derived: true, note: '机器摘要：与原文不一致时以原文为准。',
-    run: {
-      runId: 'run_B', goal: '上一条已完成的任务', status: 'done', model: 'deepseek-flash',
-      sessionId: 'session-bbb', sessionMode: 'new', cwd: 'D:/AI Pj', plan: '步骤B', instruction: '注意B', waiting: false,
-    },
-    conclusion: '历史结论摘要',
-    points: ['要点一', '要点二'],
-    artifacts: [{ path: 'D:/out/report.md', tool: 'ops_bash' }],
-    pending: ['是否继续？'],
-    stats: { durationMs: 100000, steps: 3, toolCalls: 5, messages: 1 },
-    reply: '上一次运行的回复正文',
-  },
-}
-
-const requests = []
-globalThis.fetch = async (url, options) => {
-  const raw = String(url)
-  const path = raw.split('?')[0]
-  const body = options?.body ? JSON.parse(options.body) : null
-  requests.push({ path, method: options?.method || 'GET', body })
-  if (path === '/dsh-workbench/api/dispatch') {
-    return {
-      ok: true, status: 200,
-      json: async () => ({
-        ok: true, dryRun: body?.dryRun === true, available: true, executionEnabled: true,
-        prompt: '[DSH Workbench 任务]\n目标：' + String(body?.goal || ''), cwd: 'D:/workspace',
-        model: body?.model || '', sessionMode: body?.sessionId ? 'existing' : 'new', sessionId: body?.sessionId || '',
-      }),
-    }
-  }
+  })
+  if (path === '/dsh-workbench/api/live') return ok({
+    ok: true, sessionId: 'session-aaa', running: sessionRunning,
+    steps: 6, toolCalls: 11, messages: 3, waiting: false,
+    lastText: '当前会话的最后一段回复。', turnEnd: 'end_turn',
+  })
   if (path === '/dsh-workbench/api/report') {
-    const runId = new URL(raw, 'http://127.0.0.1').searchParams.get('runId') || 'run_A'
+    const runId = new URL(String(raw), 'http://127.0.0.1').searchParams.get('runId') || 'run_A'
     const payload = reports[runId]
-    if (!payload) return { ok: false, status: 404, json: async () => ({ ok: false, error: '没有这次运行的记录' }) }
-    return { ok: true, status: 200, json: async () => payload }
+    return payload ? ok(payload) : ok({ ok: false, error: '没有这次运行的记录' }, 404)
   }
-  const payload = payloads[path]
-  if (!payload) return { ok: false, status: 404, json: async () => ({ ok: false }) }
-  return { ok: true, status: 200, json: async () => payload }
+  if (path === '/dsh-workbench/api/channel') {
+    const text = String(body?.text || '')
+    const long = /(生成|生|画|出|做)[^，。！？\n]{0,6}(图|封面|视频)/.test(text) || /批量|重构/.test(text)
+    return ok({
+      ok: true, channel: long ? 'async' : 'sync', maxMinutes: 2,
+      reasons: long ? ['文字里有长活信号「生成」：要外部生成（图/视频）', '改为派一条长活（独立会话），当前会话不被长时间占用'] : ['不超过 2 分钟的短活', '留在当前会话里接着做：同一个会话、同一段历史'],
+      decidedAt: '2026-10-31T00:00:00.000Z',
+    })
+  }
+  if (path === '/dsh-workbench/api/sync') return ok({
+    ok: true, sessionId: body?.sessionId, requestId: 'req_sync_1', channel: 'sync',
+    reasons: ['不超过 2 分钟的短活'], acceptedAt: '2026-10-31T00:00:00.000Z',
+  })
+  if (path === '/dsh-workbench/api/close') return ok({
+    ok: true, closedAt: '2026-10-31T12:00:00.000Z', outcome: body?.outcome || 'yellow',
+    next: [String(body?.next || '')], decisionAppended: Boolean(body?.decision),
+    project: { key: 'abc123', root: 'D:/AI Pj/_workbench', name: '_workbench' },
+    agents: { ok: true, bytes: 900 }, gap: { open: false },
+  })
+  if (path === '/dsh-workbench/api/memory') return ok({ ok: true, active: 'abc123', memory: statePayload().memory.memory })
+  if (path === '/dsh-workbench/api/dispatch') {
+    return ok({
+      ok: true, dryRun: body?.dryRun === true, available: true, executionEnabled: true,
+      prompt: '[DSH Workbench 任务]\n目标：' + String(body?.goal || ''), cwd: 'D:/workspace',
+      model: body?.model || '', sessionMode: body?.sessionId ? 'existing' : 'new', sessionId: body?.sessionId || '',
+    })
+  }
+  return ok({ ok: false, error: 'no mock for ' + path }, 404)
 }
 
 await import(new URL('./client.js', import.meta.url).href)
@@ -177,37 +210,36 @@ const bundle = captured.factory(() => React)
 if (!bundle || !bundle.apply) { console.error('FAIL: bundle factory returned no apply'); process.exit(1) }
 
 const registrations = []
+const tabTypes = []
 let currentSlot = null
 const ctx = {
   effect: (fn) => { try { fn() } catch {}; return () => {} },
   locale: { register: () => {}, bind: () => (k) => String(k) },
+  sidebarRightTabs: { register: (definition) => { tabTypes.push(definition); return () => {} } },
   slots: {
-    inject: (name, thunk) => { const p = currentSlot; currentSlot = name; try { thunk() } finally { currentSlot = p } },
+    inject: (name, thunk) => { const previous = currentSlot; currentSlot = name; try { thunk() } finally { currentSlot = previous } },
     register: (spec, renderFn) => { registrations.push({ slot: currentSlot, spec, renderFn }) },
   },
 }
 
 bundle.apply(ctx)
 
-const sidebar = registrations.find(r => r.slot === 'sidebar.panellist' && r.spec?.id === 'dsh-workbench')
-const main = registrations.find(r => r.slot === 'main' && r.spec?.key === 'dsh-workbench')
-if (!sidebar) { console.error('FAIL: no sidebar.panellist entry with id dsh-workbench'); process.exit(1) }
-if (!main) { console.error('FAIL: no main panel registered for dsh-workbench'); process.exit(1) }
-console.log('sidebar.panellist entry:', sidebar.spec.id, '(order', sidebar.spec.order + ')')
-console.log('main panel key:', main.spec.key)
-
+function fail(message, tree) {
+  console.error('FAIL:', message)
+  if (tree) console.error('rendered text:', JSON.stringify(textDump(tree).slice(0, 40)))
+  process.exit(1)
+}
 function render(el) {
   if (!el || typeof el !== 'object') return el
   if (typeof el.type === 'function') return render(el.type(el.props || {}))
   const kids = Array.isArray(el.props?.children) ? el.props.children.map(render) : el.props?.children
   return { ...el, props: { ...el.props, children: kids } }
 }
-
-function renderPanel() {
+function renderPanel(sessionId = 'session-aaa') {
+  for (const cleanup of pendingCleanups.splice(0)) { try { cleanup() } catch { /* ignore */ } }
   hookIndex = 0
-  return render(main.renderFn({ size: 24, active: false }))
+  return render(body.renderFn({ sessionId }))
 }
-
 function findAll(node, predicate, out = []) {
   if (!node || typeof node !== 'object') return out
   if (predicate(node)) out.push(node)
@@ -215,7 +247,7 @@ function findAll(node, predicate, out = []) {
   if (Array.isArray(kids)) kids.forEach(kid => findAll(kid, predicate, out))
   return out
 }
-const findClass = (node, cls) => findAll(node, n => n.props?.className?.includes?.(cls)).length > 0
+const findClass = (node, cls) => findAll(node, n => String(n.props?.className || '').includes(cls)).length > 0
 const findNode = (node, predicate) => findAll(node, predicate)[0] || null
 function findText(node, text) {
   if (typeof node === 'string') return node === text
@@ -239,14 +271,11 @@ function textDump(node, out = []) {
   if (node && typeof node === 'object') textDump(node.props?.children, out)
   return out
 }
-function fail(message, tree) {
-  console.error('FAIL:', message)
-  if (tree) console.error('rendered text:', JSON.stringify(textDump(tree).slice(0, 30)))
-  process.exit(1)
-}
-const clickTab = (tree, id) => {
-  const button = findNode(tree, node => node.type === 'button' && node.props?.['data-tab'] === id)
-  if (!button) fail('no tab button for ' + id, tree)
+const momentOf = tree => findAll(tree, n => n.type === 'button' && n.props?.['data-moment'])
+const activeMoment = tree => (momentOf(tree).find(n => n.props['data-active'] === 'true') || {}).props?.['data-moment']
+const clickMoment = (tree, id) => {
+  const button = momentOf(tree).find(node => node.props['data-moment'] === id)
+  if (!button) fail('no moment button ' + id, tree)
   button.props.onClick()
 }
 const clickButton = (tree, label) => {
@@ -254,181 +283,183 @@ const clickButton = (tree, label) => {
   if (!button) fail('no button labelled ' + label, tree)
   button.props.onClick()
 }
+const setTextarea = (tree, id, value) => {
+  const field = findNode(tree, n => n.type === 'textarea' && n.props?.id === id)
+  if (!field) fail('no textarea ' + id, tree)
+  field.props.onChange({ target: { value } })
+}
 
+// --- 1. registration: right column tab, session-scoped body ----------------
+const body = registrations.find(r => r.slot === 'sidebar.right.pane.tab' && r.spec?.key === 'dsh-workbench/workbench')
+if (!body) fail('no sidebar.right.pane.tab body for dsh-workbench/workbench: ' + JSON.stringify(registrations.map(r => [r.slot, r.spec?.key || r.spec?.id])))
+if (!tabTypes.length || tabTypes[0].kind !== 'workbench') fail('no workbench tab type registered')
+if (tabTypes[0].priority !== 'extension') fail('workbench tab type must claim the extension band: ' + tabTypes[0].priority)
+if (!Array.isArray(tabTypes[0].guide) || tabTypes[0].guide[0].id !== 'workbench') fail('no guide entry for the workbench tab')
+if (registrations.some(r => r.slot === 'main')) fail('the panel still registers a main slot (it would take the chat column)')
+if (registrations.some(r => r.slot === 'sidebar.panellist')) fail('the panel still registers a left-sidebar entry for a main panel that no longer exists')
+const injected = body.spec.inject('session-zzz')
+if (injected?.sessionId !== 'session-zzz') fail('tab body did not receive its session id: ' + JSON.stringify(injected))
+console.log('registration: right-column tab type + guide entry, session-scoped body, no main panel')
+
+// --- 2. auto moment: a live run wins --------------------------------------
+// First paint mounts and fires the read-only fetches; the second paint is the
+// one that can see data.
 let tree = renderPanel()
-if (!findClass(tree, 'wb-page')) fail('panel did not mount (.wb-page missing)', tree)
-
-// Let the read-only fetches settle, then render again with data present.
 await new Promise(resolve => setTimeout(resolve, 25))
 tree = renderPanel()
-
-// --- tabs: exactly one tab body is rendered ---------------------------------
-const tabIds = findAll(tree, n => n.type === 'button' && n.props?.['data-tab']).map(n => n.props['data-tab'])
-if (tabIds.join(',') !== 'run,task,history,workspace,canvas') fail('tab bar is not run/task/history/workspace/canvas: ' + tabIds.join(','), tree)
-if (findClass(tree, 'wb-run') === false) fail('run card missing on the run tab (not derived from runs.json)', tree)
+if (!findClass(tree, 'wb-page')) fail('panel did not mount (.wb-page missing)', tree)
+const moments = momentOf(tree).map(node => node.props['data-moment'])
+if (moments.slice(0, 3).join(',') !== 'attach,work,close') fail('moment bar is not attach/work/close: ' + moments.join(','), tree)
+if (activeMoment(tree) !== 'work') fail('a live run must open the working moment: ' + activeMoment(tree), tree)
+if (!findClass(tree, 'wb-run')) fail('working moment did not paint the run card', tree)
 if (!findText(tree, '统计 md 行数 top3')) fail('newest run from runs.json not rendered', tree)
-// A run whose session this Host lost must say so and offer archiving, not a
-// cancellation that cannot possibly work.
 if (!findText(tree, 'orphanedChip')) fail('orphaned run not marked in the run card', tree)
-if (!includesText(tree, 'orphanedHint')) fail('orphaned run does not explain itself', tree)
-if (!findText(tree, 'archiveRun')) fail('orphaned run offers no archive action', tree)
 if (findText(tree, 'cancelRun')) fail('orphaned run still offers a cancel that cannot work', tree)
-if (findClass(tree, 'wb-compose')) fail('task form leaked into the run tab', tree)
-if (findClass(tree, 'wb-report')) fail('report card leaked into the run tab', tree)
-if (findClass(tree, 'wb-audit')) fail('audit leaked into the run tab', tree)
-
-// --- task tab: module assembly + session targeting --------------------------
-clickTab(tree, 'task')
+if (findClass(tree, 'wb-live') === false) fail('working moment did not paint the current session', tree)
+await new Promise(resolve => setTimeout(resolve, 25))
 tree = renderPanel()
-if (!findClass(tree, 'wb-compose')) fail('task tab did not render the composer', tree)
-if (findClass(tree, 'wb-run')) fail('run card leaked into the task tab', tree)
-const goalInput = findNode(tree, n => n.type === 'input' && n.props?.id === 'wb-goal')
-if (!goalInput) fail('goal input missing', tree)
-// Prefilled from the previous dispatch: the form must not demand retyping.
-if (goalInput.props.value !== '统计 md 行数 top3') fail('goal not prefilled from the last run: ' + JSON.stringify(goalInput.props.value))
-// Templates: one choice fills every slot. Selecting must rewrite the slots and
-// stamp the template id onto the dispatch, or reuse is still manual labour.
+console.log('LIVE-PATH', JSON.stringify(findAll(tree, n => n.props?.className === 'wb-live').length), JSON.stringify(requests.filter(r => r.path === '/dsh-workbench/api/live').length))
+if (!includesText(tree, '当前会话的最后一段回复。')) fail('live reply not available', tree)
+if (findClass(tree, 'wb-sync')) fail('attach form leaked into the working moment', tree)
+if (findClass(tree, 'wb-close')) fail('close form leaked into the working moment', tree)
+console.log('moment: live run → working, orphan flagged, live session painted, other moments absent')
+
+// --- 3. working → attach: memory is the first thing on screen --------------
+clickMoment(tree, 'attach')
+tree = renderPanel()
+if (activeMoment(tree) !== 'attach') fail('attach moment not selected', tree)
+if (!findClass(tree, 'wb-memory')) fail('attach moment did not paint the project memory', tree)
+if (!includesText(tree, 'v1.0：会话接续层 + 装配层')) fail('memory mainline missing', tree)
+if (!includesText(tree, 'D:/AI Pj/_workbench')) fail('memory project root missing', tree)
+if (!findClass(tree, 'wb-sync')) fail('attach moment did not paint the task box', tree)
+if (findClass(tree, 'wb-run')) fail('run card leaked into the attach moment', tree)
+if (findClass(tree, 'wb-close')) fail('close form leaked into the attach moment', tree)
+
+// typing asks the Host what channel this work belongs to
+setTextarea(tree, 'wb-sync-text', '把那段话改短一点')
+tree = renderPanel()
+await new Promise(resolve => setTimeout(resolve, 400))
+tree = renderPanel()
+const channelCall = requests.filter(r => r.path === '/dsh-workbench/api/channel').pop()
+if (!channelCall || channelCall.body.text !== '把那段话改短一点') fail('typing did not ask the channel route: ' + JSON.stringify(requests.map(r => r.path)))
+const channelChip = findAll(tree, n => n.props?.['data-channel'])[0]
+if (!channelChip || channelChip.props['data-channel'] !== 'sync') fail('channel chip did not show sync: ' + JSON.stringify(channelChip?.props))
+const syncButton = findNode(tree, n => n.type === 'button' && findText(n.props?.children, 'syncGo'))
+if (!syncButton) fail('no sync button', tree)
+if (syncButton.props.disabled) fail('sync button disabled for a short task')
+
+// the sync click must name the session the slot injected
+const before = requests.length
+clickButton(tree, 'syncGo')
+tree = renderPanel()
+await new Promise(resolve => setTimeout(resolve, 400))
+tree = renderPanel()
+const syncCall = requests.slice(before).find(r => r.path === '/dsh-workbench/api/sync')
+if (!syncCall) fail('sync click did not call the sync route')
+if (syncCall.body.sessionId !== 'session-aaa') fail('sync did not target the injected session: ' + JSON.stringify(syncCall.body))
+if (syncCall.body.text !== '把那段话改短一点') fail('sync did not carry the task text')
+if (!includesText(tree, 'syncQueued')) fail('sync success not reported', tree)
+console.log('sync: channel rule shown before the click, prompt queued into the injected session')
+
+// a long task is refused in place and the dispatch form opens by itself
+setTextarea(tree, 'wb-sync-text', '帮我生一张封面图')
+tree = renderPanel()
+await new Promise(resolve => setTimeout(resolve, 400))
+tree = renderPanel()
+const asyncChip = findAll(tree, n => n.props?.['data-channel'])[0]
+if (asyncChip?.props['data-channel'] !== 'async') fail('generation task not classified async: ' + JSON.stringify(asyncChip?.props))
+const asyncButton = findNode(tree, n => n.type === 'button' && findText(n.props?.children, 'syncGo'))
+if (!asyncButton?.props.disabled) fail('sync button still enabled for long work')
+if (!findClass(tree, 'wb-compose')) fail('long work did not open the dispatch form', tree)
+console.log('channel: long work is refused in place and the dispatch form opens')
+
+// --- 4. the reused composer still assembles from a module and a template ---
 const templateSelect = findNode(tree, n => n.type === 'select' && n.props?.id === 'wb-template')
-if (!templateSelect) fail('template selector missing', tree)
-if (!(templateSelect.props.children || []).some(child => child?.props?.value === 'tpl_1')) {
-  fail('templates from /api/templates not offered', tree)
-}
-if (!includesText(tree, 'saveTemplate')) fail('no save-as-template control', tree)
+if (!templateSelect) fail('template selector missing in the dispatch form', tree)
+const templateOption = templateSelect.props.children.find(child => child?.props?.value === 'tpl_1')
+if (!templateOption) fail('templates from /api/templates not offered', tree)
 templateSelect.props.onChange({ target: { value: 'tpl_1' } })
 tree = renderPanel()
-const goalFromTemplate = findNode(tree, n => n.type === 'input' && n.props?.id === 'wb-goal')
-if (goalFromTemplate.props.value !== '模板目标：统计 md 行数 top3') {
-  fail('template did not fill the goal slot: ' + JSON.stringify(goalFromTemplate.props.value))
-}
-const planFromTemplate = findNode(tree, n => n.type === 'textarea' && n.props?.id === 'wb-plan')
-if (planFromTemplate.props.value !== '模板计划：先扫描再排序') fail('template did not fill the plan slot')
-const saveTplButton = findNode(tree, n => n.type === 'button' && findText(n.props?.children, 'saveTemplate'))
-if (!saveTplButton) fail('save-as-template button vanished', tree)
-saveTplButton.props.onClick()
-await new Promise(resolve => setTimeout(resolve, 20))
-const templateSave = requests.filter(r => r.path === '/dsh-workbench/api/templates').pop()
-if (!templateSave) fail('saving a template did not call the templates route')
-if (templateSave.body.id !== 'tpl_1') fail('saving from a selected template lost its id: ' + JSON.stringify(templateSave.body))
-if (!String(templateSave.body.goal || '').includes('模板目标')) fail('template save did not carry the slots: ' + JSON.stringify(templateSave.body))
-if (!Array.isArray(templateSave.body.moduleIds) || !templateSave.body.moduleIds.includes('mod_2')) {
-  fail('template save did not carry the module ids: ' + JSON.stringify(templateSave.body))
-}
+const goalInput = findNode(tree, n => n.type === 'input' && n.props?.id === 'wb-goal')
+if (!goalInput) fail('goal input missing', tree)
+if (goalInput.props.value !== '模板目标：统计 md 行数 top3') fail('template did not fill the goal slot: ' + JSON.stringify(goalInput.props.value), tree)
+// Insertion is a slot tool: open the picker on the goal slot, then take the
+// module. A saved module must not require retyping what it already holds.
+const goalSlot = findNode(tree, n => n.props?.htmlFor === 'wb-goal')
+if (!goalSlot) fail('goal slot label missing', tree)
+const openPicker = findAll(tree, n => n.type === 'button' && n.props?.className === 'wb-mini' && findText(n.props?.children, 'insertModule'))[0]
+if (!openPicker) fail('no module tool on the goal slot', tree)
+openPicker.props.onClick()
 tree = renderPanel()
+const insertOne = findAll(tree, n => n.type === 'button' && n.props?.className === 'wb-mini' && findText(n.props?.children, 'insertModule'))[1]
+if (!insertOne) fail('module picker did not list the saved module', tree)
+insertOne.props.onClick()
+tree = renderPanel()
+const goalFromModule = findNode(tree, n => n.type === 'input' && n.props?.id === 'wb-goal')
+if (!String(goalFromModule.props.value).includes('统计 md 行数并给出 top3')) fail('module did not fill the goal slot', tree)
+console.log('composer: template fills the slots, module insertion still works')
 
-const sessionSelect = findNode(tree, n => n.type === 'select' && n.props?.id === 'wb-session')
-if (!sessionSelect) fail('session target selector missing', tree)
-if (!(sessionSelect.props.children || []).some(child => child?.props?.value === 'session-ccc')) {
-  fail('sessions from /api/sessions not offered as targets', tree)
-}
+// --- 5. close-out: one form, one write ------------------------------------
+clickMoment(tree, 'close')
+tree = renderPanel()
+if (activeMoment(tree) !== 'close') fail('close moment not selected', tree)
+if (!findClass(tree, 'wb-close')) fail('close moment did not paint the close form', tree)
+if (!findClass(tree, 'wb-report')) fail('close moment did not paint the run report', tree)
+if (findClass(tree, 'wb-sync')) fail('task box leaked into the close moment', tree)
+// Each control is a fresh render, exactly like a human editing one field at a
+// time; a single render would keep re-spreading a stale draft object.
+setTextarea(tree, 'wb-close-next', '重启后按清单验收')
+tree = renderPanel()
+const outcomeSelect = findNode(tree, n => n.type === 'select' && n.props?.id === 'wb-close-outcome')
+if (!outcomeSelect) fail('outcome selector missing', tree)
+outcomeSelect.props.onChange({ target: { value: 'green' } })
+tree = renderPanel()
+const titleInput = findNode(tree, n => n.type === 'input' && n.props?.id === 'wb-close-title')
+if (!titleInput) fail('decision title field missing', tree)
+titleInput.props.onChange({ target: { value: '收工要一次写完' } })
+tree = renderPanel()
+setTextarea(tree, 'wb-close-decision', '决定：面板收工只写一次。')
+tree = renderPanel()
+const draftCheck = findNode(tree, n => n.type === 'textarea' && n.props?.id === 'wb-close-next')
+if (draftCheck.props.value !== '重启后按清单验收') fail('editing a later field wiped the next step', tree)
+const beforeClose = requests.length
+clickButton(tree, 'closeSubmit')
+tree = renderPanel()
+await new Promise(resolve => setTimeout(resolve, 400))
+tree = renderPanel()
+const closeCall = requests.slice(beforeClose).find(r => r.path === '/dsh-workbench/api/close')
+if (!closeCall) fail('close submit did not call the close route')
+if (closeCall.body.next !== '重启后按清单验收') fail('close did not carry the next step: ' + JSON.stringify(closeCall.body))
+if (closeCall.body.outcome !== 'green') fail('close did not carry the outcome colour: ' + JSON.stringify(closeCall.body))
+if (closeCall.body.title !== '收工要一次写完') fail('close did not carry the decision title: ' + JSON.stringify(closeCall.body))
+if (closeCall.body.runId !== 'run_A') fail('close did not name the run it closes: ' + JSON.stringify(closeCall.body))
+if (!includesText(tree, 'closeDone')) fail('close success not reported', tree)
+// The outcome colour is a claim, so the form must let the user pick each one.
+const outcomeOptions = outcomeSelect.props.children.map(child => child.props.value)
+if (outcomeOptions.join(',') !== 'green,yellow,red') fail('outcome selector is not green/yellow/red: ' + outcomeOptions.join(','))
+console.log('close: one form writes next + outcome + decision through /api/close')
 
-// Open the module picker on the goal slot and insert a saved module.
-const insertButtons = findAll(tree, n => n.type === 'button' && findText(n.props?.children, 'insertModule'))
-if (insertButtons.length < 3) fail('each slot should offer a module insert button, got ' + insertButtons.length, tree)
-insertButtons[0].props.onClick()
-tree = renderPanel()
-const picker = findNode(tree, n => n.props?.className?.includes?.('wb-picker'))
-if (!picker) fail('module picker did not open', tree)
-if (!includesText(picker, '统计行数模块')) fail('saved module not listed in the picker', tree)
-const pickerInsert = findNode(picker, n => n.type === 'button' && findText(n.props?.children, 'insertModule'))
-if (!pickerInsert) fail('picker has no insert button', tree)
-pickerInsert.props.onClick()
-tree = renderPanel()
-const goalAfterInsert = findNode(tree, n => n.type === 'input' && n.props?.id === 'wb-goal')
-if (!String(goalAfterInsert.props.value).includes('模块正文：统计 md 行数并给出 top3')) {
-  fail('module text was not inserted into the slot: ' + JSON.stringify(goalAfterInsert.props.value))
-}
-
-// Target an existing session, then preview: the request must carry its id.
-const sessionAfterRender = findNode(tree, n => n.type === 'select' && n.props?.id === 'wb-session')
-sessionAfterRender.props.onChange({ target: { value: 'session-ccc' } })
-tree = renderPanel()
-const taskForm = findNode(tree, n => n.type === 'form' && typeof n.props?.onSubmit === 'function' && findText(n.props?.children, 'preview'))
-if (!taskForm) fail('no preview submit button', tree)
-taskForm.props.onSubmit({ preventDefault() {} })
-await new Promise(resolve => setTimeout(resolve, 20))
-tree = renderPanel()
-const dispatchRequest = requests.filter(r => r.path === '/dsh-workbench/api/dispatch').pop()
-if (!dispatchRequest) fail('preview did not call the dispatch route', tree)
-if (dispatchRequest.body.sessionId !== 'session-ccc') fail('preview did not carry the chosen session: ' + JSON.stringify(dispatchRequest.body))
-if (dispatchRequest.body.dryRun !== true) fail('preview was not a dry run: ' + JSON.stringify(dispatchRequest.body))
-const dispatchedModules = Array.isArray(dispatchRequest.body.moduleIds) ? dispatchRequest.body.moduleIds : []
-if (!dispatchedModules.includes('mod_1')) fail('inserted module was not declared on the dispatch: ' + JSON.stringify(dispatchRequest.body))
-if (!dispatchedModules.includes('mod_2')) fail('template module ids were dropped by the dispatch: ' + JSON.stringify(dispatchRequest.body))
-if (dispatchRequest.body.templateId !== 'tpl_1') fail('preview did not carry the template id: ' + JSON.stringify(dispatchRequest.body))
-if (!findText(tree, 'previewReady')) fail('preview confirmation block not rendered', tree)
-
-// --- history tab: digest report, raw text folded ----------------------------
-clickTab(tree, 'history')
-tree = renderPanel()
-if (findClass(tree, 'wb-compose')) fail('task form leaked into the history tab', tree)
-if (!findClass(tree, 'wb-runs')) fail('run list missing on the history tab', tree)
-// The newest run is selected by default; select the finished one.
-if (!findText(tree, '行数巡检模板')) fail('history row did not show the template tag', tree)
-if (!findClass(tree, 'wb-run-row-tpl')) fail('template tag is not styled as its own chip', tree)
-const olderRows = findAll(tree, n => n.props?.className?.includes?.('wb-run-row') && n.props?.['data-active'] === 'false')
-const olderRow = olderRows.find(row => includesText(row, '上一条已完成的任务')) || olderRows[0]
-if (!olderRow) fail('no selectable older run in the history list', tree)
-olderRow.props.onClick()
-// The report fetch is async: render once to start it, settle, render again.
-tree = renderPanel()
-await new Promise(resolve => setTimeout(resolve, 20))
-tree = renderPanel()
-if (!findClass(tree, 'wb-report')) fail('report card missing after selecting a run', tree)
-if (!findText(tree, '历史结论摘要')) fail('report conclusion not rendered', tree)
-if (!findText(tree, '要点一')) fail('report points not rendered', tree)
-if (!findText(tree, 'D:/out/report.md')) fail('report artifacts not rendered', tree)
-if (!findText(tree, '是否继续？')) fail('report pending question not rendered', tree)
-// The raw record is a disclosure, never the first thing painted.
-const rawDetails = findNode(tree, n => n.type === 'details' && findText(n.props?.children, 'rawReply'))
-if (!rawDetails) fail('raw record is not behind a disclosure', tree)
-if (!includesText(rawDetails, '上一次运行的回复正文')) fail('raw reply not available inside the disclosure', tree)
-if (findText(tree, '上一次运行的回复正文') && !includesText(rawDetails, '上一次运行的回复正文')) {
-  fail('raw reply painted outside its disclosure', tree)
+// --- 6. auto moment from the gap; and no session means no sync ------------
+// A fresh mount paints loading first, then the data; two paints per case.
+const remount = async sessionId => {
+  for (const cleanup of pendingCleanups.splice(0)) { try { cleanup() } catch { /* ignore */ } }
+  hookStates = []
+  renderPanel(sessionId)
+  await new Promise(resolve => setTimeout(resolve, 25))
+  return renderPanel(sessionId)
 }
 
-// --- workspace tab: continuity, decisions, timeline, metrics ----------------
-clickTab(tree, 'workspace')
-tree = renderPanel()
-if (findClass(tree, 'wb-report')) fail('report card leaked into the workspace tab', tree)
-if (!findClass(tree, 'wb-continuity')) fail('continuity section missing', tree)
-if (!findText(tree, '测试主线')) fail('fetched mainline not rendered', tree)
-if (!findClass(tree, 'wb-decision-card')) fail('decisions were not turned into cards', tree)
-if (!findText(tree, '面板改成标签页')) fail('decision card title not rendered', tree)
-if (!findText(tree, '背景')) fail('decision card did not split its labelled parts', tree)
-if (!findClass(tree, 'wb-audit')) fail('audit timeline missing', tree)
-if (!findText(tree, 'state.edit')) fail('audit entry not rendered as a readable action', tree)
-if (!findClass(tree, 'wb-day')) fail('audit timeline is not grouped by day', tree)
-if (!findClass(tree, 'wb-metrics')) fail('metrics missing', tree)
-if (!includesText(tree, 'dispatches')) fail('metrics do not report the dispatch count', tree)
+sessionRunning = false
+memoryGapOpen = true
+tree = await remount()
+if (activeMoment(tree) !== 'close') fail('an unclosed gap must open the close moment: ' + activeMoment(tree), tree)
+memoryGapOpen = false
+tree = await remount()
+if (activeMoment(tree) !== 'attach') fail('a closed project with no run must open attach: ' + activeMoment(tree), tree)
+tree = await remount('')
+if (!includesText(tree, 'sessionMissing')) fail('a panel without a session must say so', tree)
+const orphanSync = findNode(tree, n => n.type === 'button' && findText(n.props?.children, 'syncGo'))
+if (!orphanSync?.props.disabled) fail('sync must be disabled without a session')
+console.log('moment: gap → close out, closed → attach; no session disables sync and says why')
 
-// Continuity editor opens inside the workspace tab.
-clickButton(tree, 'edit')
-tree = renderPanel()
-if (!findNode(tree, n => n.type === 'input' && n.props?.id === 'wb-edit-mainline')) fail('continuity editor did not open', tree)
-
-// Sidebar icon must render an svg element.
-const iconTree = render(sidebar.renderFn({ size: 24, active: false }))
-if (iconTree?.type !== 'svg') fail('sidebar icon not an svg', tree)
-
-console.log('tabs: run/task/history/workspace, one body at a time')
-console.log('task tab: prefill ok, module insert ok, session target ok')
-console.log('templates: select fills slots, save carries id+modules, dispatch carries templateId')
-console.log('history tab: conclusion/points/artifacts/pending ok, raw folded')
-// --- canvas tab: read-only relations ----------------------------------------
-clickTab(tree, 'canvas')
-tree = renderPanel()
-if (findClass(tree, 'wb-compose')) fail('task form leaked into the canvas tab', tree)
-if (!findClass(tree, 'wb-canvas')) fail('canvas did not render', tree)
-const canvasRows = findAll(tree, n => n.props?.className?.includes?.('wb-canvas-row'))
-if (canvasRows.length < 2) fail('canvas should show one row per template plus the loose group, got ' + canvasRows.length, tree)
-if (!includesText(tree, '行数巡检模板')) fail('canvas row missing the template title', tree)
-if (!includesText(tree, '已删除模块') && !includesText(tree, 'canvasMissingModule')) fail('canvas hid a module reference that no longer resolves', tree)
-if (!includesText(tree, '裸派发的历史任务')) fail('canvas did not group runs that came from no template', tree)
-if (!includesText(tree, 'canvasHint')) fail('canvas does not state that it is read-only', tree)
-if (includesText(tree, 'draggable')) fail('canvas advertises editing it cannot do', tree)
-console.log('canvas tab: template rows, deleted-module marker, loose-run group, read-only hint ok')
-
-console.log('workspace tab: continuity/decision cards/day-grouped audit/metrics ok')
-console.log('sidebar icon:', iconTree.type)
-console.log('')
-console.log('CLIENT HARNESS PASS')
+console.log('\nCLIENT HARNESS PASS')
