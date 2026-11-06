@@ -1,10 +1,10 @@
 # DSH Workbench
 
-A small Cordis bundle for DeepSeek Harness that adds a **Workbench command center** panel to the Web UI. It is organised as four tabs, each answering one question — *is work happening now* (run), *how do I assemble the next task* (task), *what did past runs actually produce* (history), and *what is the long-lived context* (workspace). Dispatches are assembled from reusable modules or recalled whole from a saved template and can target an existing session instead of always creating one; run records are digested into conclusion / artifacts / open questions / stats with the raw reply kept behind a disclosure. It never calls a provider directly and never bypasses DSH permissions or the session lifecycle.
+A small Cordis bundle for DeepSeek Harness that adds a **Workbench command center** panel to the Web UI. It is organised as five tabs, each answering one question — *is work happening now* (run), *how do I assemble the next task* (task), *what did past runs actually produce* (history), *what is the long-lived context* (workspace), and *how do these things connect* (canvas). Dispatches are assembled from reusable modules or recalled whole from a saved template and can target an existing session instead of always creating one; run records are digested into conclusion / artifacts / open questions / stats with the raw reply kept behind a disclosure. It never calls a provider directly and never bypasses DSH permissions or the session lifecycle.
 
 ## Features
 
-- Adds a `Workbench` main panel and sidebar entry, split into four tabs: **Run**, **Task**, **History**, **Workspace**. Only the selected tab is rendered.
+- Adds a `Workbench` main panel and sidebar entry, split into five tabs: **Run**, **Task**, **History**, **Workspace**, **Canvas**. Only the selected tab is rendered.
 - Provides a command-center draft form for goal, plan, instruction, and model; preview composes the exact prompt and shows whether dispatch is available.
 - Dispatches one instruction into a real DSH Session via `POST /dsh-workbench/api/dispatch` (Host `sessionController.create` → optional `selectModel` → `prompt`), with `GET /dsh-workbench/api/runs` for status/reply and `POST /dsh-workbench/api/runs/cancel` for cancellation. Dispatch is opt-in per workspace (`execution.enabled`), never silent, and audited.
 - Session targeting: `POST /api/dispatch` accepts an optional `sessionId`. When present it prompts that existing session (keeping its history and approvals) instead of creating a new one; `GET /api/sessions` lists dispatchable sessions with titles read from `session/title` events.
@@ -25,6 +25,7 @@ A small Cordis bundle for DeepSeek Harness that adds a **Workbench command cente
 - Exposes loopback-only GET preview routes (`/dsh-workbench/api/preview` and `/dsh-workbench/api/preview-v1`) with Harness browser trust checks; execution is explicitly disabled in phase 1.
 - Keeps the legacy Host tools `wb_get`, `wb_set`, and `wb_close`.
 - Localized English/Chinese display metadata and UI strings; theme-token-based styling.
+- Read-only canvas tab (`Canvas`) renders the module → template → run chain from the same three files the panel already loads; it makes no extra request and records no audit entry, because there is no dependency semantics yet and a drawn edge would be a claim the data cannot back.
 - Template dispatches are counted separately in the metrics block when any exist (template dispatches / total), so "which recipes are reused" is answerable from data rather than memory.
 
 ## Requirements
@@ -76,6 +77,7 @@ The panel is split into four tabs; only the selected tab exists in the DOM.
 | Task | How do I assemble the next dispatch? | Template row (`select a saved template` fills every slot, `Save as template`, `Delete`), session target (new session → ungrouped, or an existing one), model, goal/plan/instruction slots, each with `+ module` (insert a saved module) and `Save as module`, `Use last run` to refill from the previous dispatch, then `Preview` → `Run now`. Nothing is sent before the explicit confirm. |
 | History | What did past runs produce? | Selectable run list plus that run's report: conclusion, key points, artifacts (path + producing tool), open questions, stats, and the raw reply behind a disclosure. `Reuse this run` refills the task slots. |
 | Workspace | What is the long-lived context? | Continuity (mainline / stopped at / next / guardrails) with one `Edit`, decisions as labelled cards, the audit trail as a day-grouped timeline, metrics derived from `runs.json`, and the task queue. |
+| Canvas | How do these things connect? | Read-only map of what is actually on disk: one row per template (its module chips — a deleted module id shows as `module deleted` rather than disappearing —, its title and use count, and up to three runs dispatched from it with status), plus a final group for runs that came from no template. No dragging, no editing, no invented edges. |
 
 ## Security and privacy
 

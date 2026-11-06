@@ -72,6 +72,15 @@ window.__ModuleLoader__.load({
       templateHint: 'Picking a template fills every slot; saving one records this combination for next time.',
       templateEmpty: 'No templates yet — assemble the slots once, then save them here.',
       templateUses: 'used {n}×', templateRuns: 'template dispatches',
+
+      canvasTitle: 'Canvas', tabCanvas: 'Canvas',
+      canvasHint: 'Read-only: this only shows how modules, templates and runs actually connect. Nothing can be dragged or edited here.',
+      canvasEmpty: 'Nothing to draw yet — save a template, then dispatch from it.',
+      canvasModules: 'Modules', canvasRecipe: 'Template', canvasRuns: 'Runs',
+      canvasNoModules: 'This template records no modules.', canvasNoRuns: 'Never dispatched from this template yet.',
+      canvasMoreRuns: 'and {n} more', canvasMissingModule: 'module deleted',
+      canvasLoose: 'Loose dispatches', canvasLooseHint: 'These runs did not come from any template.',
+      canvasNoTemplate: 'No template',
       updated: 'Updated', noData: '—',
     }
     const zh = {
@@ -131,6 +140,15 @@ window.__ModuleLoader__.load({
       templateHint: '选一个模板会把三个槽位一次填好；把当前组合存下来，下次就不用重拼。',
       templateEmpty: '还没有模板：先把槽位拼一次，再存成模板。',
       templateUses: '用了 {n} 次', templateRuns: '模板派发',
+
+      canvasTitle: '画布', tabCanvas: '画布',
+      canvasHint: '只读：这里只显示「模块 → 模板 → 运行」的真实关系，不能拖动，也不能在这里改任何东西。',
+      canvasEmpty: '还没有可画的东西：先存一个模板，再用它派发一次。',
+      canvasModules: '模块', canvasRecipe: '模板', canvasRuns: '运行',
+      canvasNoModules: '这个模板没有记录模块。', canvasNoRuns: '还没用它派发过。',
+      canvasMoreRuns: '还有 {n} 条', canvasMissingModule: '模块已删除',
+      canvasLoose: '裸派发', canvasLooseHint: '这些运行不来自任何模板。',
+      canvasNoTemplate: '无模板',
       updated: '更新于', noData: '—',
     }
 
@@ -174,6 +192,23 @@ window.__ModuleLoader__.load({
       .wb-run-row-goal{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
       .wb-run-row-meta{flex:0 0 auto;color:var(--dsw-alias-label-secondary);font-size:10px}
       .wb-run-row-tpl{flex:0 0 auto;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;border:1px solid color-mix(in srgb,var(--dsw-alias-brand-primary) 40%,var(--dsw-alias-border-l1));border-radius:999px;padding:1px 7px;color:var(--dsw-alias-brand-primary);font-size:10px;font-weight:650}
+      .wb-canvas-row{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,0.9fr) minmax(0,1.2fr);gap:10px;align-items:start;padding:12px 0;border-top:1px solid var(--dsw-alias-border-l1)}
+      .wb-canvas-row:first-of-type{border-top:none}
+      .wb-canvas-col{display:flex;flex-direction:column;gap:6px;min-width:0}
+      .wb-canvas-label{color:var(--dsw-alias-label-secondary);font-size:10px;letter-spacing:.08em;text-transform:uppercase}
+      .wb-canvas-nodes{flex-wrap:wrap;flex-direction:row;align-items:flex-start}
+      .wb-canvas-nodes .wb-canvas-label{flex-basis:100%}
+      .wb-canvas-node{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;border:1px solid var(--dsw-alias-border-l1);border-radius:7px;padding:2px 8px;font-size:11px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}
+      .wb-canvas-node[data-kind=goal]{border-left:3px solid var(--dsw-alias-brand-primary)}
+      .wb-canvas-node[data-kind=plan]{border-left:3px solid var(--dsw-alias-state-warn-primary)}
+      .wb-canvas-node[data-kind=instruction]{border-left:3px solid var(--dsw-alias-state-success-primary)}
+      .wb-canvas-missing{color:var(--dsw-alias-state-error-primary);border-style:dashed}
+      .wb-canvas-template{font-weight:650;font-size:12px;min-width:0;overflow-wrap:anywhere}
+      .wb-canvas-run{display:flex;align-items:center;gap:6px;min-width:0;font-size:11px}
+      .wb-canvas-run-goal{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+      .wb-canvas-run-meta{flex:0 0 auto;color:var(--dsw-alias-label-secondary);font-size:10px}
+      .wb-canvas-plain{margin-top:14px}
+      @media(max-width:720px){.wb-canvas-row{grid-template-columns:1fr}}
       .wb-template select{min-width:150px;max-width:260px;min-height:30px;border:1px solid var(--dsw-alias-border-l1);border-radius:8px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);padding:5px 8px;font:inherit;font-size:12px}
       .wb-template input{box-sizing:border-box;flex:1 1 140px;min-width:0;min-height:30px;border:1px solid var(--dsw-alias-border-l1);border-radius:8px;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);padding:6px 9px;font:inherit;font-size:12px;outline:none}
       .wb-slot{display:grid;gap:6px;margin-bottom:11px}
@@ -718,7 +753,8 @@ window.__ModuleLoader__.load({
 
       const tabs = h('div', { className: 'wb-tabs', role: 'tablist' },
         tabButton('run', t('tabRun')), tabButton('task', t('tabTask')),
-        tabButton('history', t('tabHistory')), tabButton('workspace', t('tabWorkspace')))
+        tabButton('history', t('tabHistory')), tabButton('workspace', t('tabWorkspace')),
+        tabButton('canvas', t('tabCanvas')))
 
       // ---- run tab -----------------------------------------------------------
       const runMeta = run => [
@@ -1047,6 +1083,60 @@ window.__ModuleLoader__.load({
 
       const workspaceView = h('div', null, continuity, decisionsView, auditView, metricsView, tasksView)
 
+      // ---- canvas tab: read-only relations -----------------------------------
+      // Everything here is already on disk (modules / templates / runs). The
+      // canvas only lays the causal chain out so "which recipe produced which
+      // run" is visible at a glance. No new request, no write, no dragging:
+      // there is no dependency semantics yet, so faking edges would be a lie.
+      const moduleById = new Map(modules.filter(item => item && item.id).map(item => [item.id, item]))
+      const runsOfTemplate = templateIdValue => runs.filter(run => run && run.templateId === templateIdValue)
+      const plainRuns = runs.filter(run => run && !run.templateId)
+      const canvasRuns = (list, limit) => list.slice(0, 3).map(run => h('div', { className: 'wb-canvas-run', key: run.runId },
+        h('span', { className: 'wb-run-dot', 'data-status': run.status, 'aria-hidden': true }),
+        h('span', { className: 'wb-canvas-run-goal' }, run.goal || t('notSet')),
+        h('span', { className: 'wb-canvas-run-meta' }, statusLabel(run.status) + ' · ' + formatClock(run.createdAt))))
+      const canvasRow = template => {
+        const used = (Array.isArray(template.moduleIds) ? template.moduleIds : []).map(id => {
+          const module = moduleById.get(id)
+          return module
+            ? h('span', { className: 'wb-canvas-node', key: id, 'data-kind': module.kind },
+              t(module.kind) + ' · ' + String(module.title || id))
+            : h('span', { className: 'wb-canvas-node wb-canvas-missing', key: id }, t('canvasMissingModule') + ' · ' + id)
+        })
+        const related = runsOfTemplate(template.id)
+        return h('div', { className: 'wb-canvas-row', key: template.id },
+          h('div', { className: 'wb-canvas-col wb-canvas-nodes' },
+            h('div', { className: 'wb-canvas-label' }, t('canvasModules')),
+            used.length ? used : h('div', { className: 'wb-note' }, t('canvasNoModules'))),
+          h('div', { className: 'wb-canvas-col wb-canvas-recipe' },
+            h('div', { className: 'wb-canvas-label' }, t('canvasRecipe')),
+            h('div', { className: 'wb-canvas-template' }, template.title),
+            h('div', { className: 'wb-note' }, String(t('templateUses')).replace('{n}', String(Number(template.uses) || 0)))),
+          h('div', { className: 'wb-canvas-col wb-canvas-runs' },
+            h('div', { className: 'wb-canvas-label' }, t('canvasRuns')),
+            related.length
+              ? h('div', null, canvasRuns(related, 3),
+                related.length > 3 && h('div', { className: 'wb-note' }, String(t('canvasMoreRuns')).replace('{n}', String(related.length - 3))))
+              : h('div', { className: 'wb-note' }, t('canvasNoRuns'))))
+      }
+      const canvasView = h('section', { className: 'wb-card wb-canvas' },
+        h('h2', null, t('canvasTitle')),
+        h('p', { className: 'wb-hint' }, t('canvasHint')),
+        templates.length
+          ? templates.map(template => canvasRow(template))
+          : h('div', { className: 'wb-note' }, t('canvasEmpty')),
+        plainRuns.length
+          ? h('div', { className: 'wb-canvas-row wb-canvas-plain' },
+            h('div', { className: 'wb-canvas-col wb-canvas-nodes' },
+              h('div', { className: 'wb-canvas-label' }, t('canvasLoose')),
+              h('div', { className: 'wb-note' }, t('canvasLooseHint'))),
+            h('div', { className: 'wb-canvas-col wb-canvas-recipe' }, h('div', { className: 'wb-canvas-label' }, t('canvasRecipe')), h('div', { className: 'wb-note' }, t('canvasNoTemplate'))),
+            h('div', { className: 'wb-canvas-col wb-canvas-runs' },
+              h('div', { className: 'wb-canvas-label' }, t('canvasRuns')),
+              h('div', null, canvasRuns(plainRuns, 3),
+                plainRuns.length > 3 && h('div', { className: 'wb-note' }, String(t('canvasMoreRuns')).replace('{n}', String(plainRuns.length - 3))))))
+          : null)
+
       let body
       if (error) {
         body = h('section', { className: 'wb-card wb-error-card', role: 'alert' },
@@ -1060,6 +1150,8 @@ window.__ModuleLoader__.load({
         body = historyView
       } else if (tab === 'workspace') {
         body = workspaceView
+      } else if (tab === 'canvas') {
+        body = canvasView
       } else {
         body = runCard
       }

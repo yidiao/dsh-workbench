@@ -58,6 +58,11 @@ const payloads = {
         orphaned: true,
       },
       {
+        runId: 'run_C', sessionId: 'session-ggg', goal: '裸派发的历史任务',
+        model: 'deepseek-flash', status: 'done', cwd: 'D:/AI Pj',
+        createdAt: 1793943000000, updatedAt: 1793943100000,
+      },
+      {
         runId: 'run_B', sessionId: 'session-bbb', goal: '上一条已完成的任务',
         model: 'deepseek-flash', status: 'done', cwd: 'D:/AI Pj', plan: '步骤B', instruction: '注意B',
         templateId: 'tpl_1', templateTitle: '行数巡检模板',
@@ -111,6 +116,17 @@ const reports = {
     points: [], artifacts: [], pending: [],
     stats: { durationMs: 1000, steps: 6, toolCalls: 11, messages: 0 },
     reply: '',
+  },
+  run_C: {
+    ok: true, derived: true, note: '机器摘要：与原文不一致时以原文为准。',
+    run: {
+      runId: 'run_C', goal: '裸派发的历史任务', status: 'done', model: 'deepseek-flash',
+      sessionId: 'session-ggg', sessionMode: 'new', cwd: 'D:/AI Pj', waiting: false,
+    },
+    conclusion: '裸派发结论',
+    points: [], artifacts: [], pending: [],
+    stats: { durationMs: 2000, steps: 2, toolCalls: 1, messages: 0 },
+    reply: '裸派发的回复',
   },
   run_B: {
     ok: true, derived: true, note: '机器摘要：与原文不一致时以原文为准。',
@@ -248,7 +264,7 @@ tree = renderPanel()
 
 // --- tabs: exactly one tab body is rendered ---------------------------------
 const tabIds = findAll(tree, n => n.type === 'button' && n.props?.['data-tab']).map(n => n.props['data-tab'])
-if (tabIds.join(',') !== 'run,task,history,workspace') fail('tab bar is not run/task/history/workspace: ' + tabIds.join(','), tree)
+if (tabIds.join(',') !== 'run,task,history,workspace,canvas') fail('tab bar is not run/task/history/workspace/canvas: ' + tabIds.join(','), tree)
 if (findClass(tree, 'wb-run') === false) fail('run card missing on the run tab (not derived from runs.json)', tree)
 if (!findText(tree, '统计 md 行数 top3')) fail('newest run from runs.json not rendered', tree)
 // A run whose session this Host lost must say so and offer archiving, not a
@@ -349,7 +365,8 @@ if (!findClass(tree, 'wb-runs')) fail('run list missing on the history tab', tre
 // The newest run is selected by default; select the finished one.
 if (!findText(tree, '行数巡检模板')) fail('history row did not show the template tag', tree)
 if (!findClass(tree, 'wb-run-row-tpl')) fail('template tag is not styled as its own chip', tree)
-const olderRow = findNode(tree, n => n.props?.className?.includes?.('wb-run-row') && n.props?.['data-active'] === 'false')
+const olderRows = findAll(tree, n => n.props?.className?.includes?.('wb-run-row') && n.props?.['data-active'] === 'false')
+const olderRow = olderRows.find(row => includesText(row, '上一条已完成的任务')) || olderRows[0]
 if (!olderRow) fail('no selectable older run in the history list', tree)
 olderRow.props.onClick()
 // The report fetch is async: render once to start it, settle, render again.
@@ -397,6 +414,20 @@ console.log('tabs: run/task/history/workspace, one body at a time')
 console.log('task tab: prefill ok, module insert ok, session target ok')
 console.log('templates: select fills slots, save carries id+modules, dispatch carries templateId')
 console.log('history tab: conclusion/points/artifacts/pending ok, raw folded')
+// --- canvas tab: read-only relations ----------------------------------------
+clickTab(tree, 'canvas')
+tree = renderPanel()
+if (findClass(tree, 'wb-compose')) fail('task form leaked into the canvas tab', tree)
+if (!findClass(tree, 'wb-canvas')) fail('canvas did not render', tree)
+const canvasRows = findAll(tree, n => n.props?.className?.includes?.('wb-canvas-row'))
+if (canvasRows.length < 2) fail('canvas should show one row per template plus the loose group, got ' + canvasRows.length, tree)
+if (!includesText(tree, '行数巡检模板')) fail('canvas row missing the template title', tree)
+if (!includesText(tree, '已删除模块') && !includesText(tree, 'canvasMissingModule')) fail('canvas hid a module reference that no longer resolves', tree)
+if (!includesText(tree, '裸派发的历史任务')) fail('canvas did not group runs that came from no template', tree)
+if (!includesText(tree, 'canvasHint')) fail('canvas does not state that it is read-only', tree)
+if (includesText(tree, 'draggable')) fail('canvas advertises editing it cannot do', tree)
+console.log('canvas tab: template rows, deleted-module marker, loose-run group, read-only hint ok')
+
 console.log('workspace tab: continuity/decision cards/day-grouped audit/metrics ok')
 console.log('sidebar icon:', iconTree.type)
 console.log('')

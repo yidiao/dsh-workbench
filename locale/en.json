@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Workbench",
-    "description": "Four tabs: the run in flight, the next task assembled from reusable modules, past runs digested into conclusions and artifacts, and the workspace context behind them."
+    "description": "Five tabs: the run in flight, the next task recalled from a saved template, past runs digested into conclusions and artifacts, the workspace context behind them, and a read-only map of how modules, templates and runs connect."
   }
 }
