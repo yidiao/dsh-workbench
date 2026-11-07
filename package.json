@@ -1,14 +1,15 @@
 {
   "name": "dsh-workbench",
-  "version": "0.15.0",
-  "description": "Workbench for DeepSeek Harness: session-scoped right sidebar with three auto-selected moments, per-project memory injected as a generated AGENTS.md block, host-decided execution channels, a typed node graph whose green is a verified artifact, and a flywheel that promotes what actually works.",
+  "version": "2.0.0",
+  "description": "Workbench for DeepSeek Harness: DSH as a project layer. One canvas per project chains methods into loops (input → exec & log → task output); only exec methods run and only a passing verifier plus an artifact on disk turns a node green; one memory JSON truth per project regenerates the project's AGENTS.md block; roles bind models per project (t1 judge / t2 refine / t3 batch). Host API is 8 routes behind one snapshot; wb_get/wb_set/wb_close stay agent-side.",
   "keywords": [
     "deepseek-harness",
     "dsh",
     "cordis",
     "plugin",
     "workbench",
-    "ui"
+    "canvas",
+    "project-layer"
   ],
   "type": "module",
   "exports": {
@@ -33,14 +34,7 @@
     "client": {
       "platform": "web",
       "immediately": true,
-      "inject": [
-        "@deepseek-ai/dsh-api-remotes",
-        "@deepseek-ai/dsh-client-connection",
-        "@deepseek-ai/dsh-client-locale",
-        "@deepseek-ai/dsh-client-ui-conversation",
-        "@deepseek-ai/dsh-client-ui-settings",
-        "@deepseek-ai/dsh-client-ui-sidebar-right"
-      ]
+      "inject": []
     }
   },
   "engines": {

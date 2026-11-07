@@ -1,103 +1,129 @@
 # DSH Workbench
 
-A small Cordis bundle for DeepSeek Harness that puts a **Workbench** tab in the conversation's right sidebar. It answers one question at a time, in three moments: **接上 / Attach** (where did this project stop, and what is this session for), **在做 / Working** (what is happening right now — this session and any dispatched run), and **收工 / Close out** (what was produced, and what does the next session need to know). The moment is derived from data, not chosen by the user: a live run wins, then an unclosed gap, else attach. Short work is queued into the session the panel is attached to (`POST /api/sync`); long work becomes its own dispatched session. Memory is one JSON record per project, and every write regenerates a bounded `AGENTS.md` block, so a model receives the continuity with no custom prompt code. Run records are digested into conclusion / artifacts / open questions / stats with the raw reply kept behind a disclosure. It never calls a provider directly and never bypasses DSH permissions or the session lifecycle.
+> DeepSeek Harness 上的项目层：用画布把「方法」连成循环，一档判断、二档嚼需求、三档干活；用户只看汇报。
 
-## Features
+会话重启即死，子代理是临时工，聊天记录是流水账——这些是宿主耗材。能沉淀的东西只有七样：**项目、方法、画布、循环、记忆、角色、汇报**。工作台把它们全部落盘为 JSON，一份真源，机器可查。它的野心只有一句话：**让 DSH 记得住长期项目，让用户只看汇报不看日志。**
 
-- Adds a `Workbench` tab **in the right sidebar**, scoped to the conversation it is opened from. It registers a right-sidebar tab type (`kind: 'workbench'`, one guide entry) and renders into `sidebar.right.pane.tab`, so it never replaces the chat column; the slot injects the session id, which is what makes "do this in *this* session" possible.
-- Three moments instead of five tabs, auto-selected from data: **Attach** (project memory, "this task", the channel verdict, and the dispatch form folded away), **Working** (current session progress polled from `GET /api/live`, the current dispatched run, the node graph and canvas behind a disclosure), **Close out** (next step + outcome + decision form, then the run report). A manual click overrides the choice until the ↺ chip restores auto-selection.
-- Node graph with typed ports (`GET /api/flow`, `POST /api/flow/node|/node/delete|/edge|/edge/delete|/run|/verify`, stored in `flow.json`): a node is a quintuple — kind, typed inputs, typed outputs, executor, verifier. An edge is refused with the reason when the types do not match, when a port is unknown, when an input is already bound, when a node points at itself, or when the edge would close a cycle (`409 edge-rejected` + issues). Execution is explicit (`confirm: true`) and topologically ordered.
-- Executor registry is the single gate on green: v1.0 registers one real executor (local template assembly, writes a file under `flow-out/`); `llm` / `image` / `video` are declared but **unregistered**, so those nodes render gray and refuse to run instead of faking success. A node is green only when its verifier passes **and** the artifact exists on disk (`file-exists` / `file-contains`); deleting the artifact and re-verifying turns it red.
-- Two execution channels decided by the Host before any click (`POST /api/channel`): a short task (≤2 min, no external generation) stays in the same session and is queued with `POST /api/sync`; anything long (<2 min / needs generated media / waits on an outside resource / user is leaving) is refused in place with the reason and dispatched as its own session. The button is disabled — not silently redirected — and the dispatch form opens by itself.
-- Provides a command-center draft form for goal, plan, instruction, and model; preview composes the exact prompt and shows whether dispatch is available.
-- Dispatches one instruction into a real DSH Session via `POST /dsh-workbench/api/dispatch` (Host `sessionController.create` → optional `selectModel` → `prompt`), with `GET /dsh-workbench/api/runs` for status/reply and `POST /dsh-workbench/api/runs/cancel` for cancellation. Dispatch is opt-in per workspace (`execution.enabled`), never silent, and audited.
-- Session targeting: `POST /api/dispatch` accepts an optional `sessionId`. When present it prompts that existing session (keeping its history and approvals) instead of creating a new one; `GET /api/sessions` lists dispatchable sessions with titles read from `session/title` events.
-- Reusable module library (`GET`/`POST /dsh-workbench/api/modules`, stored in `modules.json`): each goal/plan/instruction slot can be filled from a saved module, saved back as one, and modules used by a dispatch get their use counter bumped — the raw material for assembling task templates and, later, a canvas.
-- Task templates (`GET`/`POST /dsh-workbench/api/templates`, stored in `templates.json`): a template is a saved recipe — the three slots, the module ids it was assembled from, the default model and session mode. Selecting one fills every slot in a single action; saving one records the current combination; dispatch carries `templateId`, records `templateId`/`templateTitle` on the run, inherits the template's module ids when the caller sent none, and bumps the template use counter. A stale template id never blocks work: dispatch proceeds and reports `templateMissing`.
-- Orphaned-run handling: after a Harness restart a run's session may no longer exist. `GET /api/runs` marks such runs `orphaned` after a 30s grace period, the panel shows "not tracked" and offers archive (`POST /api/runs/cancel` with `archive: true`), which closes the record locally and writes a `dispatch.archive` audit entry instead of pretending a cancellation worked.
-- Derived run reports (`GET /dsh-workbench/api/report?runId=`): conclusion (first paragraph), key points (list items), artifacts (file paths recovered from `tool/call` arguments), open questions (interrogative sentences plus the waiting flag) and stats. Marked `derived` and always carries the raw reply for a disclosure — the panel shows the digest, never the log.
-- Close-out route (`POST /api/close`): writes the next first step, an outcome colour, the basis run id and an optional decision in one call, then regenerates the injected `AGENTS.md` block. The panel treats a missing close-out as a visible gap, never as a blocker.
-- Flywheel (`GET /api/flywheel`, `POST /api/outcome`, records in `outcomes.json`): every run ends green / yellow / red, and reds must carry a reason. A template is **promoted** (recommended) only after 2 greens with no red; one red **demotes** it until it earns two fresh greens. Per-green cost is tokens ÷ green cards (four token classes, never ÷ all runs), and a card unused for 30 days is **archived**, not deleted. The Attach moment shows up to three ranked candidates with their reason, cost and reuse count, and one click refills the dispatch form. Colour recording reaches the same store from `/api/close` (one write) and from `/api/outcome`, and re-recording a run replaces its colour instead of double counting.
-- The reused views live inside the moments that need them: the dispatch composer and template row inside Attach, the run report inside Close out, decisions / audit / metrics behind disclosures.
-- Append-only audit trail: every panel write records time, action, request id and a compact before/after summary in `audit.jsonl`, shown in the panel via `GET /dsh-workbench/api/audit`.
-- Lists the profile's real model routes in the selector via the read-only `llm` service catalog (`/dsh-workbench/api/models`), pre-selecting the current default model without calling it.
-- Reads optional `_workbench/ledger.json` and merges it with `relay/ledger.csv` when available.
-- Reads relay cards matching `relay/cards/T-<number>.md` as task summaries.
-- Resolves optional `workbench.config.json`, `dsh-workbench.json`, or `config.json` by upward probing, with `DSH_WORKBENCH_CONFIG`/`DSH_CONFIG` overrides.
-- **Per-project memory (v0.9)**: one JSON record per project root (`memory/<key>.json`), a registry at `memory/projects.json`, and an append-only `memory/<key>.decisions.md`. The legacy single slot (`state.json` / `decisions.md`) is imported once into the project whose root is the workbench itself; the originals are left untouched.
-- **Generated `AGENTS.md` block**: every memory write re-renders a bounded (≤2 KiB) section between `<!-- dsh-workbench:generated:start -->` and `<!-- dsh-workbench:generated:end -->` in the project root's `AGENTS.md`. Harness already injects that file on a session's first request, so the memory reaches a model with no custom prompt code and no cache-prefix damage; anything outside the markers is hand-written and never touched. This is verified live: writing the block updates an already-running session's instructions on the next file event.
-- Project activation: `POST /dsh-workbench/api/memory` with a `sessionId` (or an explicit `root`) pins the project a session works in; `GET` returns the active record plus a `gap` flag meaning "work happened after the last close".
-- Host tools `wb_get` / `wb_set` / `wb_close` are per-project (`project` accepts a name, key or root; default = active project): `wb_get` returns the 5-line state, the decisions or the project list, `wb_set` updates only the fields it receives, and `wb_close` records the next step, an outcome colour (`green` requires a passing script AND an existing artifact), the basis run, and appends the decision.
-- Localized English/Chinese display metadata and UI strings; theme-token-based styling.
-- The Working moment paints the real graph: node cards coloured by the Host's own recorded state (green verified / red failed / gray no executor / idle not run), each with its port types, executor label, artifact note and any validation issue; a refused graph shows the reasons and cannot be run. Below it, the older read-only map of module → template → run stays for history.
-- Editable continuity stays available from Attach (mainline / stopped at / next / guardrails via `POST /api/state-edit`, decisions via `POST /api/decision-add`), and `decisions.md` is turned into labelled cards (background / decision / cost), the audit trail into a day-grouped timeline, and metrics into figures derived from `runs.json` only.
-- Template dispatches are counted separately in the metrics block when any exist (template dispatches / total), so "which recipes are reused" is answerable from data rather than memory.
+## 设计理念
 
-## Requirements
+下面每一条都不是口号，都有 harness 断言守着。理念若不能被机器守护，就只是装饰。
 
-- DeepSeek Harness `>=0.2.0-rc.2`.
-- Node.js runtime provided by Harness.
+**绿不作假。** 一个节点变绿，当且仅当它的校验器通过、且产物真的在盘上。删掉产物再重验会变红——host harness 里就测这一条。executor 注册表是唯一的绿门：`text` 本地真跑；`llm / image / video` 已声明未注册，节点灰显、拒绝执行。宁可不能跑，也不假装跑过。
 
-## Install
+**汇报不是原文。** 用户看到的是渲染后的结论与产物；原始输出折叠在「原文」里当证据。证据永远排在结论后面——别把原始日志当报表。
 
-Clone the public repository, then install its root directory as a local bundle through Harness Plugin Manager:
+**判断不下放。** 工作台搬运数据、渲染汇报、执行图，但不替一档做判断。颜色由人记录，红的理由必填，需求含糊先过幕僚再上画布。
+
+**最小循环是验收底线。** 每个项目开箱即得 `用户输入 → 执行与日志 → 任务输出`，等价于一次原生对话——画布再复杂，插件至少是「一个会记住项目的聊天」。跑完一轮，新的最小循环自动接在上一轮输出后面，画布永远以一个空输入收尾。
+
+**输入像聊天。** 在输入节点里打字，按 Enter 就跑。v0.16 的三槽位派发表单（目标/计划/指令 × 模块 × 模板 × 预览两步走）整体退役。操作友好的标准是路径短，不是字段全。
+
+**标签由用户定。** 顶栏只有三种 tab：主页、配置、每个启用项目一张**可关闭**的画布（从主页「打开画布」进入）。任务、历史、工作区按用户决定删除：输入回到画布，历史折叠成一行，工作区变成主页的项目卡。v0.15 的教训写进了红线：**用户定过的布局不擅自改**。
+
+**文字一行。** 界面每条文字一行以内（中 ≤30、英 ≤44 字符），client harness 逐条量，不靠自觉。
+
+## 七个词
+
+| 词 | 是什么 | 存哪 |
+|---|---|---|
+| 项目 | 用户命名的工作单元：一张画布 + 一份主记忆 | `projects/<key>/` |
+| 方法 | 唯一复用单位：类型 + 端口 + 执行器 + 校验器 | `projects/<key>/methods.json` |
+| 画布 | 方法图：节点 = 方法实例，边 = 类型相符的数据流 | `projects/<key>/canvas.json` |
+| 循环 | 一次「输入 → 执行 → 输出」；有产物、有颜色、可折叠 | `projects/<key>/runs.json` |
+| 记忆 | 一份 JSON 真源 + 判例；写完重生成 AGENTS.md 受管区块 | `projects/<key>/memory.json` |
+| 角色 | 三档分工；**角色绑定模型，角色不是模型** | `projects.json` 的 `roles` |
+| 汇报 | 渲染后的结果：结论、产物、原文折叠 | 由循环派生 |
+
+**不上画布、不进记忆的**：会话与子代理。它们是宿主耗材，会话 id 永远不进方法、画布、记忆（invariant 5，harness 断言）。
+
+## 页面
+
+| tab | 回答什么 | 里面有什么 |
+|---|---|---|
+| **主页** | 有哪些项目？ | 项目卡（主线、结论色、启用/归档、打开画布）、新建项目、最近循环（真数据，来自 runs.json） |
+| **配置** | 怎么跑？ | 角色三档绑定模型路由（健康度从本项目循环记录推导，从不调用供应商）；方法库（内置锁定，改库即改所有实例）；常用语句（一键插进输入框）；设计令牌（圆角/间距/主色，改动全局生效，无需改代码） |
+| **项目画布 ×** | 这个项目现在怎么样？ | 节点卡在点阵上：输入节点打字 Enter 跑；执行节点显示校验与产物状态；输出节点渲染汇报；旧循环折叠成一行；收工是对话框，不占 tab |
+
+## 方法
+
+```
+方法 = { id, 名称, 类型, 端口, 执行器, 参数, 校验器, 归属 }
+类型 ∈ 输入 / 指令 / 执行 / 观测 / 输出
+归属 ∈ 内置 / 用户 / AI 提炼
+```
+
+只有**执行**型带执行器和校验器——存储层会把其他类型混进来的执行器剥掉；只有执行型参与「绿」。方法库是项目级的，跨项目复制留给 v2.1。
+
+画布对图的要求与诚实执行的要求是同一条：端口类型不符、端口不存在、一个输入被接两条边、自环、成环——一律 `409 edge-rejected` 并给出原因。**图说不通就跑不了；跑不了就明说跑不了。**
+
+## 记忆
+
+一个项目一份 `memory.json`（主线 / 停在哪 / 下一步 / 红线 / 判例），每次写入自动把 ≤2.6 KB 的受管区块重生成进项目根的 `AGENTS.md`——Harness 本来就注入这个文件，所以模型零提示词代码拿到续接上下文，缓存前缀不受损。标记之间的内容归插件，**标记之外永不碰**。
+
+收工 = 一次写：下一步 + 结论颜色（red 必须写原因）+ 判例。面板的收工对话框与 agent 的 `wb_close` 走同一条路，永不各说各话。
+
+## 数据路径
+
+```
+_workbench/
+  projects.json            项目注册表（active + items + roles）
+  globals.json             跨项目偏好：常用语句、设计令牌
+  workbench.config.json    执行开关（阶段 D 使用）
+  projects/<key>/
+    memory.json            主记忆（唯一真源）
+    decisions.md           判例（append-only）
+    methods.json           方法库
+    canvas.json            节点 / 边 / 状态
+    canvas-view.json       位置与缩放（拖动优先于布局）
+    runs.json              循环记录（最近 50）
+    audit.jsonl            面板每次写入的 append-only 审计
+    artifacts/             产物 —— 绿的物证
+  _archive/v0.15/          旧布局原件（迁移一次移入，只读）
+```
+
+迁移在首次加载时执行一次（以 `projects.json` 存在为门）：旧 `state.json` / `memory/<key>.json` 成为项目记忆，`flow.json` 变成方法 + 画布，旧画布旁补上最小循环，原件全部移入 `_archive/v0.15/`。迁移幂等，harness 有回归。
+
+## Host API —— 8 条
+
+| 路由 | 动词 | 干什么 |
+|---|---|---|
+| `/dsh-workbench/api/snapshot` | GET | 一个请求画整页：项目 / 记忆 / 方法 / 画布 / 循环 / 模型 / 偏好 |
+| `/dsh-workbench/api/project` | POST | `create / activate / enable / archive / bind`（角色绑定） |
+| `/dsh-workbench/api/memory` | PUT | `main`（连续性）/ `global`（语句与令牌）/ `close`（收工） |
+| `/dsh-workbench/api/method` | POST | `save / delete`（内置锁定；画布在用的拒绝删） |
+| `/dsh-workbench/api/canvas` | POST | `node.add / node.set / node.delete / edge.add / edge.delete / view` |
+| `/dsh-workbench/api/run` | POST | `run`（显式 `confirm:true`，拓扑序）/ `cancel` / `reverify` |
+| `/dsh-workbench/api/outcome` | POST | 一循环一色（red 必须带原因） |
+| `/dsh-workbench/api/models` | GET | 只读模型目录 + 从本项目循环记录推导的健康度 |
+
+全部只接受本机回环 + Harness 浏览器信任校验；每次被接受的写入都进 `audit.jsonl`。Agent 工具恰好三个：`wb_get` / `wb_set` / `wb_close`，按项目定位。
+
+## 安装
 
 ```sh
 git clone https://github.com/yidiao/dsh-workbench.git
 ```
 
-Select the cloned `dsh-workbench/` directory in the Plugin Manager's local bundle install flow. Do not manually edit a Harness profile's package manifest or Cordis patch. The repository root is the package directory; no build step is required.
+在 Harness 插件管理器里把仓库根目录作为本地 bundle 安装（仓库根即包目录，无构建步骤）。重启 DSH，左栏图标进入工作台。宿主还是旧版时，面板会提示「重启 DSH 加载 v2」，不会假装网络坏了。
 
-After installation, refresh the Harness Web UI, open a conversation, and pick **Workbench** in the right sidebar (the guide card titled "Workbench").
-
-## Data paths
-
-The plugin searches upward from its installed package directory for a directory containing `state.json` and uses that as the workbench directory. It searches upward for either `relay/ledger.csv` or `ledger.csv` to locate relay data. Explicit environment overrides take priority:
-
-- `DSH_WORKBENCH_DIR`: directory containing the workbench's own files (`projects.json` registry, `audit.jsonl`, `runs.json`, `modules.json`, `templates.json`, `memory/`), and the default project root.
-- `DSH_MEMORY_ROOT`: overrides the default project root (normally `DSH_WORKBENCH_DIR`).
-- `DSH_RELAY_DIR`: directory containing optional `ledger.csv` and `cards/`.
-
-When no data is found, the panel remains available and presents empty states. The Host `wb_set` tool creates the workbench directory if needed. Memory writes go to `<projectRoot>/memory/<key>.json` and regenerate `<projectRoot>/AGENTS.md`; nothing writes `state.json` any more (it is read once, if present, to import the legacy slot). Outcome colours live in `outcomes.json` (one record per run; `{runId, templateId, colour, reason, tokens, at}`), which is what the flywheel's promotion, cost and decay are computed from — the panel never stores a second copy of the verdict. The node graph lives in `flow.json` (`{version, nodes, edges, state}`) and its artifacts in `flow-out/`; `state` is the last recorded colour per node, never inferred from the graph's shape. Dispatched runs are recorded in `runs.json` (last 50) with the goal/plan/instruction so the task tab can refill them; saved modules live in `modules.json` (last 200) and saved templates in `templates.json` (last 100). A run dispatched from a template also stores `templateId`/`templateTitle`, so renaming or deleting the template never rewrites history.
-
-Dispatching is opt-in per workspace in `workbench.config.json`:
-
-```json
-{
-  "execution": {
-    "enabled": true,
-    "cwd": "D:/path/to/workspace"
-  }
-}
-```
-
-`execution.cwd` is the Session workspace passed to `sessionController.create`; it defaults to the workbench directory itself (or its parent when the directory name starts with `_`). `DSH_WORKBENCH_EXECUTION=1` enables dispatch without a config file; an explicit `enabled: false` keeps it off.
-
-## Panel layout
-
-The panel is a right-sidebar tab scoped to one session. Only the moment the data calls for is rendered (or the moment the user clicked).
-
-| Moment | Answers | Content |
-| --- | --- | --- |
-| Attach | Where did this project stop, and what is this session for? | Project memory card (mainline, stopped at, next, red lines, gap warning, project root, "use this project"), the ranked **continue-from-here** candidates from the flywheel (reason + per-green cost + one-click refill), the task box with the channel chip (`same session` / `child session`) and its reason shown before the click, `Do it here` (queues into the bound session) or — for long work — the dispatch composer opened inline. Continuity editor and the full composer behind disclosures. |
-| Working | What is happening right now? | Current session card polled from `/api/live` (running/idle, steps, tool calls, waiting flag, last text behind a disclosure), the current dispatched run rebuilt from `runs.json`, then the node graph (coloured by real state, `Run graph` / `Re-check artifacts`) and the module → template → run map behind disclosures. |
-| Close out | What was produced, and what must the next session know? | One form (next first step, outcome green/yellow/red, decision title + body), then the selected run's report: conclusion, key points, artifacts, open questions, stats, raw reply behind a disclosure. Decisions and audit behind disclosures. |
-
-A run whose session this Harness process lost is marked `not tracked` and offers `Archive` instead of a cancel that cannot work. Nothing is dispatched before the explicit confirm, and a sync task is never sent without a bound session.
-
-## Security and privacy
-
-Read endpoints reject non-loopback hosts and apply `connection.requestRejection` before returning workspace data. Write endpoints (`state-edit`, `decision-add`, `dispatch`, `runs/cancel`, `modules`, `templates`) apply the same loopback + browser-trust checks, accept only POST with a bounded JSON body (64 KiB), validate field types and lengths, and record each accepted write in `audit.jsonl`. Dispatch requires an explicit `dryRun: false` request, an opt-in workspace config, and a Host `sessionController`; it creates a durable Session and sends one instruction through DSH's normal Agent loop, so the profile's tool permissions, approvals and cancellation lifecycle still apply. The model catalog only reads the Host `llm` service (`listProviders`/`listModels`) and the current default selection; it never calls a model, selects a model, or changes provider configuration. Memory is written only into the project root the caller names (or the active one); the generated `AGENTS.md` section is bounded to 2 KiB and replaced in place between its markers, so hand-written instructions above and below it are preserved byte for byte. Memory responses expose the project root because that is the whole point of per-project memory, but they never include file contents from outside it. Workspace files and relay data are not included in this repository. Do not commit private project files, credentials, or generated ledgers.
-
-## Development checks
+## 开发
 
 ```sh
-node --check index.js
-node --check client.js
-node ._host_check.mjs
-node ._client_check.mjs
+node --check index.js && node --check client.js
+node ._host_check.mjs     # 迁移幂等、两项目隔离、最小循环、绿/灰/红、8 路由、3 工具
+node ._client_check.mjs   # 面板形状、标签结构、文字预算、主题 token
 ```
 
-`._host_check.mjs` runs the Host bundle against a mocked `sessionController` and the real filesystem: registration, guards, memory (legacy `state.json`/`decisions.md` imported once with the originals untouched, the hand-written `AGENTS.md` section preserved across regeneration, the generated block staying under 2 KiB even with every field at its limit, idempotent re-render, per-project isolation under concurrent writes, and the loopback-only guard), dispatch lifecycle (`create → selectModel → prompt`), session targeting (an explicit `sessionId` prompts that session and never calls `create`), the module library (save / upsert by kind+title / list / remove / use counter / 400-404-405-413 guards), the derived report (conclusion, points, artifacts from `tool/call` arguments, open questions, stats, 404 for an unknown run), the template store (save / same-title upsert / list / remove, dispatch inheriting the template's module ids and bumping its use counter, a stale template id still dispatching with `templateMissing`, and the 400-404-405 guards), orphaned runs (an untracked running run is flagged after the grace period; `archive: true` closes it locally and auditing `dispatch.archive`, while a refused session cancel stays 409), run status/reply, cancellation, live progress annotation (`steps`/`toolCalls`/`waiting`), and the audit actions — including that `prompt` is called with a real `AbortSignal`, matching the Host API's `prompt(request, signal)` contract, and that a finished or cancelled run never keeps the `waiting` flag. `._client_check.mjs` mounts the panel headlessly with the framework's slot contract faked and asserts: the workbench is a right-sidebar tab type with one guide entry and a session-scoped body, and registers **no** `main` slot or `sidebar.panellist` icon (so it cannot take the chat column); the moment is derived from data (a live run → working, an unclosed gap → close out, else attach; ↺ restores auto-selection); typing asks `/api/channel` and the chip shows the rule before the click; `syncGo` posts to `/api/sync` with the **injected** session id and the task text; long work disables the sync button and opens the dispatch form; the template row fills every slot and a saved module still inserts; the close-out form carries next step + outcome colour + decision title + basis run id to `/api/close`; the flywheel card lists a promoted candidate with its reason and per-green cost (an unknown cost says unknown), `Continue` refills the form from that template, and a candidate whose template vanished says so instead of silently doing nothing; and a panel mounted without a session says so and disables sync. The Host half is covered by `._host_check.mjs` for the same routes with a mocked `sessionController`, plus the flywheel (2 greens promote, 1 red demotes, 2 fresh greens re-promote, per-green cost from the four token classes, one colour per run, close-time colours reaching the same store, a 40-day-idle card archived but kept, and the step's exit condition: a promoted template reused twice after promotion), plus the node graph: an empty graph, typed ports, every refused edge (type mismatch, unknown port, self-loop, unknown endpoint, double-bound input, cycle), a real two-node `资料 → 文本` flow that writes artifacts under `flow-out/` and consumes the upstream one, a verifier that cannot pass going red, re-verify turning green into red once the artifact is deleted, a node with an unregistered executor staying gray and writing nothing, `confirm: true` being required to run, and the `flow.*` audit actions.
+`_backup-v0.16/` 存着 v2 改写前的源码（git-ignored），仅作参照。
 
-Then install the package in a test profile (or a profile you explicitly designate for testing), open a conversation, and verify the panel in the right sidebar of the connected Harness Web UI: the guide entry appears, the moment matches the project's data, and a short task queued from Attach continues in that same conversation. A successful package installation alone does not prove that a browser rendered the panel.
+## 路线
+
+- **v2.0.0（当前）**——阶段 A（按项目存储 + 8 路由 + 迁移）、B（方法库 + 最小循环引擎）、C（页面重写）已落地。
+- **阶段 D**——`llm` 执行器接真实会话：短活在当前会话、长活派生会话；run 记录 role + model；异构三档成立后，「spawn 后切模型」降级为待验证探针。
+- **阶段 E**——记忆双层（全局记忆 + 辅助记忆），全局记忆修改需用户批准。
+
+设计基线见 `_workbench/大纲-v2.md`；待验证探针（相对 import、spawn 切模型、image/video 供应商、三档同模 A/B）见其 §10。
+
+## License
+
+MIT

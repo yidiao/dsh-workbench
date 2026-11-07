@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Workbench",
-    "description": "Five tabs: the run in flight, the next task recalled from a saved template, past runs digested into conclusions and artifacts, the workspace context behind them, and a read-only map of how modules, templates and runs connect."
+    "description": "The project layer on DSH: Home (projects), Config (roles / methods / phrases / tokens), and one closable canvas tab per enabled project. Methods chain into the minimal loop; green means the verifier passed and the artifact is on disk."
   }
 }
